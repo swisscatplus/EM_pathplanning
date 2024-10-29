@@ -1,7 +1,7 @@
 import numpy as np
 import cvxpy as cp
 from shapely import Point, LineString
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 from copy import deepcopy
 
 from .path_planner import PathPointDatum
@@ -15,13 +15,13 @@ class MPCTracker:
     Path tracker using MPC
     """
 
-    def __init__(self) -> None:
+    def __init__(self, plot_rviz: bool = False) -> None:
         # time parameters:
         self.N = 8
         self.dt = 0.125  # follows tracker node rate
 
         # state limits
-        self.v_max = 0.2  # m/s
+        self.v_max = 0.1  # m/s
         self.omega_max = 1  # rad/s
         self.delta_v_max = 0.1  # rate of change limit for linear speed
         self.delta_omega_max = 0.3  # rate of change limit for angular speed
@@ -41,7 +41,8 @@ class MPCTracker:
         # other parameters
         self.nominal_speed = self.v_max
         self.nominal_dl = self.dt * self.nominal_speed
-        self.goal_radius = 0.005  # 5mm
+        self.goal_radius = 0.01  # 10mm
+        self.goal_angle_tol = 0.0873 # rad or 5 deg
 
         # Progress variable
         self.s = None  # percentage progress along the path
@@ -59,6 +60,9 @@ class MPCTracker:
         if self.write:
             with open("src/mpc_data.txt", "w") as file:
                 file.write(f"Total error, OE, current theta, des OE, optimised OE \n")
+
+        # rviz
+        self.plot_rviz = plot_rviz
 
     def compute_path_length(self, path: List[Segment]) -> None:
         """
@@ -274,7 +278,7 @@ class MPCTracker:
                     remaining_path = [tmp_seg] + remaining_path[seg_idx + 1 :]
                 else:
                     remaining_path = [tmp_seg]
-                return next_x, next_y, next_dir, remaining_path 
+                return next_x, next_y, next_dir, remaining_path
             else:
                 remaining_dl -= seg.length
                 if seg_idx == len(remaining_path) - 1:
@@ -347,6 +351,21 @@ class MPCTracker:
         self.s = None
         self.path_length = None
 
+    def check_goal(self, current_pose: Pose2D, path: List[Segment]) -> bool:
+        goal = path[-1].end
+        tmp_pt = path[-1].start
+        if tmp_pt == goal:
+            tmp_pt = path[-2].start
+        goal_distance_sq = (current_pose[0] - goal.x) ** 2 + (current_pose[1] - goal.y) ** 2
+        dx = goal.x - tmp_pt.x
+        dy = goal.y - tmp_pt.y
+        goal_angle = np.arctan2(dy, dx)
+        angle_diff = (current_pose[2] - goal_angle + np.pi) % (2 * np.pi) - np.pi
+        # print((goal_distance_sq < self.goal_radius**2), (angle_diff < self.goal_angle_tol), self.s > 0.5, flush=True)
+        if (goal_distance_sq < self.goal_radius**2) and (angle_diff < self.goal_angle_tol) and self.s > 0.5:
+            return True
+        return False
+
     def track(self, current_pose: PosePt2D, path: List[Segment]) -> Tuple[float, float]:
         """
         Tracks the path of the robot using an MPC solver
@@ -357,12 +376,14 @@ class MPCTracker:
         Returns:
             Tuple[float, float]: command linear and angular velocity
         """
+        print("Tracker looping", self.s,  flush=True)
         # TODO: Reset if get new path
-        goal = path[-1].end
-        if (current_pose[0] - goal.x) ** 2 + (
-            current_pose[1] - goal.y
-        ) ** 2 < self.goal_radius**2 and self.s > 0.99:
-            return 0.0, 0.0
+        if self.s is not None and self.check_goal(current_pose, path):
+            # print("FINISHED!", flush=True)
+            if self.plot_rviz:
+                return 0.0, 0.0, [], [], []
+            else:
+                return 0.0, 0.0
 
         x_ref, y_ref, theta_ref, direction_ref = self.get_reference_path(
             current_pose, path
@@ -511,5 +532,7 @@ class MPCTracker:
                 file.write(
                     f"{prob.value:.5f}, {orientation_error.value:.5f}, {current_pose[2]:.4f}, {theta_ref[1]:.4f}, {theta.value[1]:.4f} \n"
                 )
+        if self.plot_rviz:
+            return v_command, omega_command, x.value, y.value, theta.value
 
         return v_command, omega_command
