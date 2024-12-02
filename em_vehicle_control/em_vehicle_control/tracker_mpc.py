@@ -13,10 +13,12 @@ from em_vehicle_control.helper_classes.segment import *
 import rclpy
 from rclpy.node import Node
 from tf2_ros import Buffer, TransformListener
-from geometry_msgs.msg import TransformStamped, Transform, Twist
+from geometry_msgs.msg import TransformStamped, Transform, Twist, Quaternion
 from em_vehicle_control_msgs.msg import Pose2D, Path2D
 import tf2_ros
 from rclpy.duration import Duration
+from visualization_msgs.msg import Marker, MarkerArray
+from std_msgs.msg import Header, ColorRGBA
 
 PosePt2D = Tuple[float, float, float]  # (x, y, yaw) values
 
@@ -46,8 +48,6 @@ class Tracker(Node):
         ##############
         # Parameters #
         ##############
-        
-
         self.path = None
         self.path_msg_lock = threading.Lock()
 
@@ -56,8 +56,6 @@ class Tracker(Node):
         )
         self.path_subscription
         self.timer = self.create_timer(0.125, self.timer_callback)  # 8Hz
-
-        self.tracker = MPCTracker()
 
         #########
         # WRITE #
@@ -68,6 +66,14 @@ class Tracker(Node):
                 file.write(
                     f"xR, yR, yaw_R, xA, yA, xB, yB, curr_cte, curr_oe, v, omega \n"
                 )
+
+        #########################
+        # Plot MPC plan in RVIZ #
+        #########################
+        self.plot_rviz = True
+        self.tracker = MPCTracker(plot_rviz = self.plot_rviz)
+        if self.plot_rviz:
+            self.marker_publisher = self.create_publisher(MarkerArray, 'visualization_marker_array', 10)
 
     def path_subscription(self, msg):
         with self.path_msg_lock:
@@ -128,7 +134,18 @@ class Tracker(Node):
         
         segments = create_segments(self.path)
         tic = time()
-        v, omega = self.tracker.track(robot_pose, segments)
+        if not self.plot_rviz:
+            v, omega = self.tracker.track(robot_pose, segments)
+        else:
+            marker_array = MarkerArray()
+            # delete_marker = self.delete_all_markers()
+            # marker_array.markers.append(delete_marker)
+            v, omega, x, y, theta = self.tracker.track(robot_pose, segments) 
+            for i, (x_, y_, theta_) in enumerate(zip(x, y, theta)):
+                marker = self.create_arrow_marker(x_, y_, robot_pose[2] + theta_, i)
+                marker_array.markers.append(marker)
+            self.marker_publisher.publish(marker_array)
+                
         toc = time()
         # self.get_logger().info(f"{toc-tic}")
 
@@ -141,6 +158,53 @@ class Tracker(Node):
         """
         with self.path_msg_lock:
             self.control_loop()
+    
+    def yaw_to_quaternion(self, yaw):
+        """Convert a yaw angle (in radians) to a quaternion."""
+        r = R.from_euler('z', yaw, degrees=False)
+        quat_array = r.as_quat()  # This returns [qx, qy, qz, qw]
+        quat_msg = Quaternion()
+        quat_msg.x = quat_array[0]
+        quat_msg.y = quat_array[1]
+        quat_msg.z = quat_array[2]
+        quat_msg.w = quat_array[3]
+        return quat_msg
+
+    def create_arrow_marker(self, x, y, yaw, marker_id):
+        """Create a marker for RViz to visualize an arrow at (x, y) with the given yaw."""
+        marker = Marker()
+        marker.header.frame_id = f'world'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'arrows'
+        marker.id = marker_id
+        marker.type = Marker.ARROW
+        marker.action = Marker.ADD
+
+        # Set the pose of the arrow (position and orientation)
+        marker.pose.position.x = x
+        marker.pose.position.y = y
+        marker.pose.position.z = 0.0
+        marker.pose.orientation = self.yaw_to_quaternion(yaw)
+
+        # Set the scale of the arrow (size)
+        marker.scale.x = 0.2  # Arrow length
+        marker.scale.y = 0.01  # Arrow width
+        marker.scale.z = 0.01  # Arrow height
+
+        # Set the color of the arrow (RGBA)
+        marker.color = ColorRGBA(r=0.25, g=0.88, b=0.82, a=0.8)  # turqoise arrow
+
+        marker.lifetime = rclpy.duration.Duration(seconds=0).to_msg()  # Infinite duration
+        return marker
+        
+    def delete_all_markers(self):
+        """Create a marker to delete all previous markers."""
+        marker = Marker()
+        marker.header.frame_id = f'{self.robot_name}/base_link'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.action = Marker.DELETEALL
+        return marker
+
 
 
 def main(args=None):

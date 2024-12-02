@@ -41,7 +41,7 @@ class MPCTracker:
         # other parameters
         self.nominal_speed = self.v_max
         self.nominal_dl = self.dt * self.nominal_speed
-        self.goal_radius = 0.01  # 10mm
+        self.goal_radius = 0.03  # 30mm
         self.goal_angle_tol = 0.0873 # rad or 5 deg
 
         # Progress variable
@@ -75,76 +75,154 @@ class MPCTracker:
         for seg in path:
             self.path_length += seg.length
 
-    def find_nearest_point_on_path(
-        self, current_pose: PosePt2D, path: List[Segment], s: float
-    ) -> Tuple[int, float, Tuple[float, float]]:
-        """
-        Calculates the closest point on the path segment from s% to 100% of the path.
+    def find_segment_and_progress(
+        self, path: List[Segment], path_travelled: float
+    ) -> Tuple[int, float]:
+        """Find the segment and progress along it based on total path traveled.
 
         Args:
-            current_pose(PosePt2D): Current position of the robot
-            path(List[Segment]): List of desired positions, with direction of motion
-            s(float) : progress variable on the path
+            path (List[Segment]): List of path segments.
+            path_travelled (float): Distance travelled along the path.
+
         Returns:
-            Tuple[int, float, Tuple[float, float]]: Tuple containing
-                - Index of segment (int)
-                - percentage length of segment (float)
-                - (x,y) position of nearest point (Tuple[float, float])
+            Tuple[int, float]: A tuple containing:
+                - int: Index of the segment where the distance falls.
+                - float: Progress percentage along the identified segment.
         """
-        path_travelled = self.path_length * s
         path_travelled_tmp = 0
-        # first get path travelled from s%
-        for full_path_idx, seg in enumerate(path):
+        for idx, seg in enumerate(path):
             path_travelled_tmp += seg.length
             if seg.length == 0:
-                # prevents division by 0
-                percent_of_segment_travelled = 1
-                break
+                continue
             if path_travelled_tmp >= path_travelled:
-                percent_of_segment_travelled = (
-                    1 - (path_travelled_tmp - path_travelled) / seg.length
-                )
-                break
-        path_seg_tmp = deepcopy(path[full_path_idx])
-        path_seg_tmp.start.x = (
-            path[full_path_idx].end.x - path[full_path_idx].start.x
-        ) * percent_of_segment_travelled + path[full_path_idx].start.x
-        path_seg_tmp.start.y = (
-            path[full_path_idx].end.y - path[full_path_idx].start.y
-        ) * percent_of_segment_travelled + path[full_path_idx].start.y
-        path_seg_tmp.re_init()
-        if full_path_idx + 1 < len(path):
-            path_remaining = [path_seg_tmp] + path[full_path_idx + 1 :]
+                percent_travelled = 1 - (path_travelled_tmp - path_travelled) / seg.length
+                return idx, percent_travelled
+        return len(path) - 1, 1  # If path_traveled exceeds path length, return last segment
+
+    def adjust_start_position(
+        self, path: List[Segment], segment_index: int, percent_travelled: float
+    ) -> Segment:
+        """Adjust the start position of a segment based on travel progress.
+
+        Args:
+            path (List[Segment]): List of path segments.
+            segment_index (int): Index of the current segment.
+            percent_travelled (float): Percentage of progress within the segment.
+
+        Returns:
+            Segment: A modified segment with the adjusted start position.
+        """
+        seg = deepcopy(path[segment_index])
+        seg.start.x = (path[segment_index].end.x - path[segment_index].start.x) * percent_travelled + path[segment_index].start.x
+        seg.start.y = (path[segment_index].end.y - path[segment_index].start.y) * percent_travelled + path[segment_index].start.y
+        seg.re_init()
+        return seg
+    
+    def calculate_progress_on_segment(self, nearest_pt: Point, segment: Segment) -> float:
+        """Calculate the percentage along the full segment where the nearest point lies.
+
+        Args:
+            nearest_pt (Point): The closest point on the segment to the robot.
+            segment (Segment): The full path segment.
+
+        Returns:
+            float: The accurate percentage along the segment.
+        """
+        dx = segment.end.x - segment.start.x
+        dy = segment.end.y - segment.start.y
+        px = nearest_pt.x - segment.start.x
+        py = nearest_pt.y - segment.start.y
+
+        # Calculate percentage using dot product
+        if (dx**2 + dy**2) == 0:
+            return 1.0  # Segment has zero length
         else:
-            path_remaining = [path_seg_tmp]
+            percent = (px * dx + py * dy) / (dx**2 + dy**2)
+            # Clamp to ensure it remains within [0, 1]
+            return max(0.0, min(1.0, percent))
+
+    def find_closest_point_on_remaining_path(
+        self, current_pose: PosePt2D, remaining_path: List[Segment], full_path: List[Segment], start_segment_index: int
+    ) -> Tuple[int, float, Tuple[float, float]]:
+        """Find the closest point to the robot on the remaining path with reference to the full path.
+
+        Args:
+            current_pose (PosePt2D): Current position of the robot.
+            remaining_path (List[Segment]): Remaining path segments starting from the adjusted position.
+            full_path (List[Segment]): Full original path segments.
+            start_segment_index (int): The index in the original full path where this subset starts.
+
+        Returns:
+            Tuple[int, float, Tuple[float, float]]: A tuple containing:
+                - int: Index of the nearest segment in the original path.
+                - float: Accurate progress percentage along the segment in the full path.
+                - Tuple[float, float]: (x, y) coordinates of the nearest point.
+        """
         min_distance = float("inf")
         robot_position = Point(current_pose[0], current_pose[1])
-        # in the remaining path, find closest point
-        for rem_seg_idx, seg in enumerate(path_remaining):
-            nearest_pt_tmp = seg.line.interpolate(seg.line.project(robot_position))
+        nearest_pt, nearest_seg_idx_in_rem_path, percent_of_nearest_segment = None, None, None
+
+        # Initial pass to find the nearest segment in `remaining_path`
+        for idx, seg in enumerate(remaining_path):
+            # Project and normalize
+            projected_dist = seg.line.project(robot_position, normalized=True)
+            # TODO remove clamp Clamp between 0 and 1 to ensure it's within bounds
+            # projected_dist = max(0.0, min(1.0, projected_dist))
+            nearest_pt_tmp = seg.line.interpolate(projected_dist, normalized=True)
             distance = robot_position.distance(nearest_pt_tmp)
+            
             if distance < min_distance:
                 min_distance = distance
                 nearest_pt = nearest_pt_tmp
-                nearest_seg_idx = rem_seg_idx + full_path_idx
-        dx_tmp = path[nearest_seg_idx].end.x - path[nearest_seg_idx].start.x
-        dy_tmp = path[nearest_seg_idx].end.y - path[nearest_seg_idx].start.y
-        px_tmp = nearest_pt.x - path[nearest_seg_idx].start.x
-        py_tmp = nearest_pt.y - path[nearest_seg_idx].start.y
-        if (dx_tmp**2 + dy_tmp**2) == 0:
-            # prevents division by 0
-            percent_of_nearest_segment = 1
-        else:
-            percent_of_nearest_segment = np.sqrt(
-                (px_tmp**2 + py_tmp**2) / (dx_tmp**2 + dy_tmp**2)
-            )
-        while percent_of_nearest_segment >= 0.995 or path[nearest_seg_idx].length == 0:
-            # move on to the next segment if it is close
-            if nearest_seg_idx + 1 < len(path):
+                nearest_seg_idx_in_rem_path = idx
+
+        # Map to the correct segment index in `full_path`
+        nearest_seg_idx = nearest_seg_idx_in_rem_path + start_segment_index
+
+        # Compute accurate percentage on the segment in `full_path`
+        percent_of_nearest_segment = self.calculate_progress_on_segment(nearest_pt, full_path[nearest_seg_idx])
+        # Handle edge case where the nearest point is near the end of a segment or segment has zero length
+        # for smoothness
+        while (percent_of_nearest_segment >= 0.995 or remaining_path[nearest_seg_idx_in_rem_path].length == 0):
+            # Check if we are on the last segment in `remaining_path`, in which case we stop
+            if nearest_seg_idx_in_rem_path == len(remaining_path) - 1:
+                break  # Exit if we’re at the last segment to prevent infinite loop
+
+            # Move to the next segment if possible
+            nearest_seg_idx_in_rem_path += 1
+            nearest_seg_idx = nearest_seg_idx_in_rem_path + start_segment_index
+            if remaining_path[nearest_seg_idx_in_rem_path].length > 0:
+                nearest_pt = remaining_path[nearest_seg_idx_in_rem_path].start
                 percent_of_nearest_segment = 0
-                nearest_seg_idx += 1
-                nearest_pt = path[nearest_seg_idx].start
+                break  # Exit as soon as a valid non-zero-length segment is found
+
         return nearest_seg_idx, percent_of_nearest_segment, (nearest_pt.x, nearest_pt.y)
+
+    def find_nearest_point_on_path(
+        self, current_pose: PosePt2D, path: List[Segment], s: float
+    ) -> Tuple[int, float, Tuple[float, float]]:
+        """Main function to find the closest point on a path.
+
+        Args:
+            current_pose (PosePt2D): Current position of the robot.
+            path (List[Segment]): List of desired path segments.
+            s (float): Progress percentage along the path.
+
+        Returns:
+            Tuple[int, float, Tuple[float, float]]: A tuple containing:
+                - int: Index of the nearest segment.
+                - float: Percentage along the segment.
+                - Tuple[float, float]: (x, y) coordinates of the nearest point.
+        """
+        path_travelled = self.path_length * s
+        segment_idx, percent_travelled = self.find_segment_and_progress(path, path_travelled)
+        adjusted_starting_segment = self.adjust_start_position(path, segment_idx, percent_travelled)
+        if segment_idx + 1 < len(path):
+            remaining_path = [adjusted_starting_segment] + path[segment_idx + 1 :]
+        else:
+            remaining_path = [adjusted_starting_segment]
+        return self.find_closest_point_on_remaining_path(current_pose, remaining_path, path, segment_idx)
+
 
     def update_progress_variable(
         self,
@@ -310,27 +388,18 @@ class MPCTracker:
         if self.path_length is None:
             self.compute_path_length(path)
         remaining_spatial_path = self.get_remaining_path(current_pose, path)
-
         x_ref = np.zeros(self.N + 1)
         y_ref = np.zeros(self.N + 1)
         theta_ref = np.zeros(self.N + 1)
         direction_ref = [0] * (self.N + 1)
 
         x_ref[0], y_ref[0] = current_pose[0], current_pose[1]
-
         for k in range(1, self.N + 1):
             x_ref[k], y_ref[k], direction_ref[k], remaining_spatial_path = (
                 self.get_next_reference_point(remaining_spatial_path)
             )
         direction_ref[0] = direction_ref[1]
-
         theta_ref = self.calculate_theta(x_ref, y_ref, current_pose[2], direction_ref)
-
-        # print("x_ref", x_ref, flush=True)
-        # print("y_ref", y_ref, flush=True)
-        # print("dl: ", np.sqrt(np.diff(x_ref) ** 2 + np.diff(y_ref) ** 2))
-        # print("dir_ref", direction_ref, flush=True)
-
         return x_ref, y_ref, theta_ref, direction_ref
 
     def warm_start_shift(self, arr: np.ndarray) -> np.ndarray:
@@ -361,7 +430,6 @@ class MPCTracker:
         dy = goal.y - tmp_pt.y
         goal_angle = np.arctan2(dy, dx)
         angle_diff = (current_pose[2] - goal_angle + np.pi) % (2 * np.pi) - np.pi
-        # print((goal_distance_sq < self.goal_radius**2), (angle_diff < self.goal_angle_tol), self.s > 0.5, flush=True)
         if (goal_distance_sq < self.goal_radius**2) and (angle_diff < self.goal_angle_tol) and self.s > 0.5:
             return True
         return False
@@ -376,15 +444,13 @@ class MPCTracker:
         Returns:
             Tuple[float, float]: command linear and angular velocity
         """
-        print("Tracker looping", self.s,  flush=True)
+        # print("Tracker looping", self.s,  flush=True)
         # TODO: Reset if get new path
         if self.s is not None and self.check_goal(current_pose, path):
-            # print("FINISHED!", flush=True)
             if self.plot_rviz:
                 return 0.0, 0.0, [], [], []
             else:
                 return 0.0, 0.0
-
         x_ref, y_ref, theta_ref, direction_ref = self.get_reference_path(
             current_pose, path
         )

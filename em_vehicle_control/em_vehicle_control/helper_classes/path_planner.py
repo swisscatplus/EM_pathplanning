@@ -4,7 +4,7 @@ import networkx as nx
 from shapely import Point
 
 from .map import RoadTrack, RoadMap
-from .pathplanners.coopAstar import Astar, CAstar
+from .pathplanners.coopAstar import CAstar
 from .pathplanners.rrt import RRT_star_Reeds_Shepp
 from .pathplanners.pp_viz import RoadMapAnimator
 from .vehicles import *
@@ -169,12 +169,14 @@ class PathPlanner:
             (source[0] - goal[0]) ** 2 + (source[1] - goal[1]) ** 2
         )
         if source_goal_distance < self.goal_distance_threshold:
+            # RRT* for near goal
             return PlanningAlgoData("RRT*")
         start_node = self.road_graph.get_N_nearest_vertices((source[0], source[1]))
         end_node = self.road_graph.get_N_nearest_vertices((goal[0], goal[1]))
         if self.node_paths[index] != None:
             start_edge = self.identify_starting_edge(source, self.node_paths[index])
             if start_edge is not None:
+                # CA* if there is already a CA* path and the robot is near to an edge
                 algo_plan_data = PlanningAlgoData("CA*")
                 algo_plan_data.set_start_edge_and_end_node(start_edge, end_node)
                 return algo_plan_data
@@ -326,6 +328,9 @@ class PathPlanner:
         for index, path_algo in enumerate(path_algos):
             if path_algo.pp_algo == "CA*":
                 self.node_paths[index] = castar_paths.pop(0)
+                if path_algo.current_edge is not None:
+                    # prepend node prior to preserve current edge
+                    self.node_paths[index] = [(path_algo.current_edge[0], 0, 0)] + self.node_paths[index]
                 self.pose_paths[index] = None  # CA* only updates node paths
                 # Always send the new path for CA*
                 pose_time_paths[index] = self.convert_nodes_to_time_path(

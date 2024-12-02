@@ -6,9 +6,9 @@ from scipy.spatial import KDTree
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-from ..vehicles import *
-from ..map import RoadMap
-from ..pathplanners.reeds_shepp_path_planning import (
+from em_vehicle_control.helper_classes.vehicles import *
+from em_vehicle_control.helper_classes.map import RoadMap
+from em_vehicle_control.helper_classes.pathplanners.reeds_shepp_path_planning import (
     reeds_shepp_path_planning,
 )
 
@@ -695,14 +695,13 @@ class RRT_star_Reeds_Shepp(RRT_star):
             if self.check_collision_point(candidate_node.get_pose()):
                 continue
             candidate_node = self.steer(nearest_node, candidate_node)
+            if candidate_node is None:
+                continue
             candidate_node.parent = nearest_node_idx
             if self.check_collision_linestring(candidate_node):
                 continue
             # rewire here
             nearby_nodes_idxs = self.get_nearby_nodes(candidate_node)
-            # for idx in nearby_nodes_idxs:
-            #     if candidate_node.get_pose() == self.node_list[idx].get_pose():
-            #         print(self.node_list)
             candidate_node = self.rewire(candidate_node, nearby_nodes_idxs)
             self.node_list.append(candidate_node)
             if self.try_goal_path(candidate_node):

@@ -9,20 +9,20 @@ class BaseVehicle():
     def __init__(
             self, 
             start_position: List,
-            min_wheel_acceleration: float,
-            max_wheel_acceleration: float,
-            min_wheel_speed: float,
-            max_wheel_speed: float,
+            # min_wheel_acceleration: float,
+            # max_wheel_acceleration: float,
+            # min_wheel_speed: float,
+            # max_wheel_speed: float,
             wheel_radius: float,
             length_of_wheel_axis: float
         ):
         self._x = start_position[0]
         self._y = start_position[1]
         self._theta = start_position[2] # theta is measured clockwise from the x axis
-        self._min_wheel_acceleration = min_wheel_acceleration
-        self._max_wheel_acceleration = max_wheel_acceleration
-        self._min_wheel_speed = min_wheel_speed
-        self._max_wheel_speed = max_wheel_speed
+        # self._min_wheel_acceleration = min_wheel_acceleration
+        # self._max_wheel_acceleration = max_wheel_acceleration
+        # self._min_wheel_speed = min_wheel_speed
+        # self._max_wheel_speed = max_wheel_speed
         self._wheel_radius = wheel_radius
         self._length_of_wheel_axis = length_of_wheel_axis
         self._L_wheel_speed = 0
@@ -40,22 +40,22 @@ class BaseVehicle():
         ax.axis('scaled')
         plt.show()
 
-    def step(self, dt: float, left_acc: float, right_acc: float) -> None:
-        """Updates the state of the vehicle after timestep dt with input left_acc and right_acc"""
-        left_acc = np.clip(left_acc, self._min_wheel_acceleration, self._max_wheel_acceleration)
-        right_acc = np.clip(right_acc, self._min_wheel_acceleration, self._max_wheel_acceleration)
-        # step in wheel velocity
-        self._L_wheel_speed = self._L_wheel_speed + left_acc * dt
-        self._L_wheel_speed = np.clip(self._L_wheel_speed, self._min_wheel_speed, self._max_wheel_speed)
-        self._R_wheel_speed = self._R_wheel_speed + right_acc * dt
-        self._R_wheel_speed = np.clip(self._R_wheel_speed, self._min_wheel_speed, self._max_wheel_speed)
-        # wheel velocities are assumed to be held constant throughout dt
-        self._linear_velocity = self._wheel_radius * (self._L_wheel_speed + self._R_wheel_speed) / 2
-        self._angular_velocity = self._wheel_radius * (self._R_wheel_speed - self._L_wheel_speed) / self._length_of_wheel_axis
-        # compute new position of the vehicle, in dt, we move linearly followed by rotation
-        self._x = self._x + self._linear_velocity * dt * np.cos(self._theta)
-        self._y = self._y + self._linear_velocity * dt * np.sin(self._theta)
-        self._theta = (self._theta + self._angular_velocity * dt) % (2*np.pi)
+    # def step(self, dt: float, left_acc: float, right_acc: float) -> None:
+    #     """Updates the state of the vehicle after timestep dt with input left_acc and right_acc"""
+    #     left_acc = np.clip(left_acc, self._min_wheel_acceleration, self._max_wheel_acceleration)
+    #     right_acc = np.clip(right_acc, self._min_wheel_acceleration, self._max_wheel_acceleration)
+    #     # step in wheel velocity
+    #     self._L_wheel_speed = self._L_wheel_speed + left_acc * dt
+    #     self._L_wheel_speed = np.clip(self._L_wheel_speed, self._min_wheel_speed, self._max_wheel_speed)
+    #     self._R_wheel_speed = self._R_wheel_speed + right_acc * dt
+    #     self._R_wheel_speed = np.clip(self._R_wheel_speed, self._min_wheel_speed, self._max_wheel_speed)
+    #     # wheel velocities are assumed to be held constant throughout dt
+    #     self._linear_velocity = self._wheel_radius * (self._L_wheel_speed + self._R_wheel_speed) / 2
+    #     self._angular_velocity = self._wheel_radius * (self._R_wheel_speed - self._L_wheel_speed) / self._length_of_wheel_axis
+    #     # compute new position of the vehicle, in dt, we move linearly followed by rotation
+    #     self._x = self._x + self._linear_velocity * dt * np.cos(self._theta)
+    #     self._y = self._y + self._linear_velocity * dt * np.sin(self._theta)
+    #     self._theta = (self._theta + self._angular_velocity * dt) % (2*np.pi)
     
     def get_state(self) -> Tuple:
         return self._x, self._y, self._theta, self._linear_velocity, self._angular_velocity
@@ -74,19 +74,20 @@ class EdyMobile(BaseVehicle):
         self._length_to_back_rect = 0.03
         self._length_to_front_rect = 0.11
         # Define wheel properties
-        self._min_wheel_acceleration = -0.2 # rad/s/s
-        self._max_wheel_acceleration = 0.2
-        self._min_wheel_speed = -0.5 # rad/s
-        self._max_wheel_speed = 0.5
+        # self._min_wheel_acceleration = -0.2 # rad/s/s
+        # self._max_wheel_acceleration = 0.2
+        # self._min_wheel_speed = -0.5 # rad/s
+        # self._max_wheel_speed = 0.5
         self._wheel_radius = 0.08
         self.turning_radius = self._length_of_wheel_axis/2
+        self.nominal_speed = 0.3 # m/s
 
         super().__init__(
             start_position, 
-            self._min_wheel_acceleration, 
-            self._max_wheel_acceleration,
-            self._min_wheel_speed,
-            self._max_wheel_speed,
+            # self._min_wheel_acceleration, 
+            # self._max_wheel_acceleration,
+            # self._min_wheel_speed,
+            # self._max_wheel_speed,
             self._wheel_radius,
             self._length_of_wheel_axis
         )
@@ -114,6 +115,7 @@ class EdyMobile(BaseVehicle):
             (self._x - backct + radst, self._y - backst - radct)
         ])
         self._vehicle_model = unary_union([rectangle, circle])
+        self.vehicle_model = self._vehicle_model
 
     def step(self, dt: float, left_acc: float, right_acc: float) -> None:
         super().step(dt, left_acc, right_acc)
@@ -125,19 +127,20 @@ class Edison(BaseVehicle):
         self._length_of_wheel_axis = 0.23
         self.body_radius = 0.245/2
         # Define wheel properties
-        self._min_wheel_acceleration = -0.2 # rad/s/s
-        self._max_wheel_acceleration = 0.2
-        self._min_wheel_speed = -0.5 # rad/s
-        self._max_wheel_speed = 0.5
+        # self._min_wheel_acceleration = -0.2 # rad/s/s
+        # self._max_wheel_acceleration = 0.2
+        # self._min_wheel_speed = -0.5 # rad/s
+        # self._max_wheel_speed = 0.5
         self._wheel_radius = 0.08
         self.turning_radius = self._length_of_wheel_axis/2
+        self.nominal_speed = 0.3 # m/s
 
         super().__init__(
             start_position, 
-            self._min_wheel_acceleration, 
-            self._max_wheel_acceleration,
-            self._min_wheel_speed,
-            self._max_wheel_speed,
+            # self._min_wheel_acceleration, 
+            # self._max_wheel_acceleration,
+            # self._min_wheel_speed,
+            # self._max_wheel_speed,
             self._wheel_radius,
             self._length_of_wheel_axis
         )

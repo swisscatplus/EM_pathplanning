@@ -1,0 +1,157 @@
+FSM:
+- States:
+  - Move (Sampling-based)
+  - Move (Graph-based)
+  - Waiting
+  - Idle
+  - Error
+- Transitions:
+  - Any State -> Error: Occurs when control of the vehicle is lost
+  - Error -> Idle: Occurs when control of the vehicle is restored
+  - Idle -> Move (Sampling-based): Decided by Road Network Behavior Tree (RNBTree)
+  - Idle -> Move (Graph-based): Decided by RNBTree
+  - Waiting -> Move (Sampling-based): Decided by RNBTree
+  - Waiting -> Move (Graph-based): Decided by RNBTree
+  - Move (Sampling-based) -> Waiting: Decided by RNBTree
+  - Move (Graph-based) -> Waiting: Decided by RNBTree
+
+Fleet Manager Tree:
+- Root
+  - Selector:
+    - Sequence:
+      - Action: Call for help, fix error
+    - Sequence:
+      - Action: Fetch missions
+      - Action: Plan Paths
+      - Action: Compute danger areas
+      - Action: Prioritise and move robot
+
+Fetch Missions Tree:
+- Root
+  - Sequence:
+    - Action: Get all current poses and goals
+    - Action: For each robot, if it has a goal, switch from idle to wait
+
+Plan Paths Tree:
+- Root
+  - Sequence:
+    - Action: For all idle, waiting, and error robots, compute danger area, block graph nodes, set as static obstacles for sampling methods
+  - Sequence:
+    - Action: Plan path for robot_0 to robot_N (Plan Paths for Robot_i)
+
+Plan Paths for Robot_i Tree:
+- Root
+  - Selector:
+    - Sequence:
+      - Condition: Check if there was a previously planned sampling-based path
+      - Condition: Check if robot is near to that path
+      - Action: Follow the sampling-based path
+    - Sequence:
+      - Condition: Check if robot is near its goal
+      - Action: Use sampling-based methods to plan directly to the goal
+    - Sequence:
+      - Condition: Check if there was a previously planned graph-based path
+      - Condition: Check if robot is near to that path
+      - Action: Follow the graph-based path
+    - Sequence:
+      - Condition: Check if robot is near a graph node
+      - Action: Use graph-based methods to plan directly to the goal
+    - Sequence:
+      - Action: Use sampling-based methods to plan path to the nearest graph node
+
+Compute Danger Areas Tree:
+- Root
+  - Sequence:
+    - Action: Compute danger area for robot_0 to robot_N (Compute danger area for robot_i)
+
+Compute Danger Area for Robot_i Computation Tree:
+- Root
+  - Sequence:
+    - Condition: If sampling methods use for planning
+    - Action: Danger Area, buffered minimal convex union of goal area and robot footprint
+  - Sequence:
+    - Condition: If graph methods use for planning
+    - Action: Danger Area, buffered swept polygon of robot footprint along path planned, with the swept length summing up to a certain, determined length
+  - Sequence:
+    - Condition: If waiting or error state
+    - Action: Danger Area, buffered car footprint
+  - Sequence:
+    - Condition: If idle state
+    - Action: Danger Area, car footprint
+
+Prioritise and Move Robot Tree:
+- Root
+  - Sequence:
+    - Action: Determine priority of robots
+    - Action: Arrange robots 0 to N according to priority list. Re-tag robots (robot_0 now has most priority)
+    - Action: Move robot_0 to robot_N (Move robot_i)
+
+Determine Priority of Robots Tree:
+- Root
+  - Selector:
+    - Sequence:
+      - Action: Priority list: follow original/initialisation order
+    - Sequence:
+      - Action: Identify all overlapping danger areas
+      - Selector:
+        - Condition: No overlapping danger areas
+        - Sequence:
+          - Action: Resolve overlapping danger area for robot_0 to robot_N (Resolve overlapping danger area (DA) i)
+
+Resolve Overlapping Danger Area (DA) i Tree:
+- Root
+  - Selector:
+    - Sequence:
+      - Condition: Is waiting-based DA overlap
+      - Action: Prioritise waiting robot
+    - Sequence:
+      - Condition: Is sampling-based, sampling-based DA overlap
+      - Selector:
+        - Sequence:
+          - Action: Re-plan one robot with the other as a static obstacle
+          - Action: Prioritise the re-planned robot
+        - Action: Set both robots to error. Ask for help
+    - Sequence:
+      - Condition: Is sampling-based, graph-based DA overlap
+      - Action: Prioritise sampling-based movement robot
+    - Sequence:
+      - Condition: Is graph-based, graph-based DA overlap
+      - Action: Prioritise robot based on laning rules
+
+Laning Rules Tree:
+- Root
+  - Selector:
+    - Sequence:
+      - Condition: Both robots are on the same lane
+      - Action: Prioritise robot in front, with respect to the lane
+      - Selector:
+        - Condition: Both robots are going in the same direction
+        - Action: Set both robots to error, ask for help
+    - Sequence:
+      - Selector:
+        - Sequence:
+          - Condition: Both robots are currently on different lanes
+          - Condition: Danger area only overlaps in intersection
+          - Action: Maintain priority list
+        - Action: Set both robots to error, ask for help
+    - Action: Case unidentified. Set both robots to error, ask for help
+
+Move Robot_i Tree:
+- Root
+  - Selector:
+    - Condition: Robot has already been set to idle, wait, or error
+    - Sequence:
+      - Sequence:
+        - Condition: Robot_i and robot_j's danger areas will overlap, such that j < i
+        - Condition: Robot j is not idle or error
+        - Action: Set robot_i to wait
+    - Selector:
+      - Condition: Robot will not cross intersection in danger area
+      - Selector:
+        - Sequence:
+          - Condition: Intersection not reserved
+          - Action: Reserve intersection
+          - Action: Move
+        - Sequence:
+          - Condition: Intersection reserved
+          - Action: Wait

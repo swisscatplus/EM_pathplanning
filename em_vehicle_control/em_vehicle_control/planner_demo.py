@@ -58,23 +58,23 @@ class Planner(Node):
     def plan_callback(self):
         current_time = rclpy.time.Time()
 
-        # paths = [[
-        #     PathPointDatum(4.41, 7.51, 0, 1),
-        #     PathPointDatum(4.147, 4.706, 0, 1),
-        #     PathPointDatum(4.15, 4.71, 0, 1),
-        #     PathPointDatum(4.147, 4.706, 0, -1),
-        #     PathPointDatum(4.41, 7.51, 0, -1),
-        # ]]
+        paths = [[
+            # PathPointDatum(4.429, 7.54, 0, 1),
+            # PathPointDatum(4.429, 4.729, 0, 1),
+            PathPointDatum(4.227, 4.729, 0, 1),
+            PathPointDatum(4.429, 4.729, 0, -1),
+            PathPointDatum(4.429, 7.54, 0, -1),
+        ]]
 
         # tight loop at NMR
         self.get_logger().info("Sending path")
-        paths = [[
-            PathPointDatum(4.292, 7.445, 0 ,1),
-            PathPointDatum(4.298, 7.215, 0 ,1),
-            PathPointDatum(4.519, 7.216, 0 ,1),
-            PathPointDatum(4.495, 7.5, 0 ,1),
-            PathPointDatum(4.292, 7.445, 0 ,1)
-        ]]
+        # paths = [[
+        #     PathPointDatum(4.292, 7.445, 0 ,1),
+        #     PathPointDatum(4.298, 7.215, 0 ,1),
+        #     PathPointDatum(4.519, 7.216, 0 ,1),
+        #     PathPointDatum(4.495, 7.5, 0 ,1),
+        #     PathPointDatum(4.292, 7.445, 0 ,1)
+        # ]]
        
         for path, pub, rviz_pub in zip(paths, self.pubbers, self.rviz_pubbers):
             if path is None:

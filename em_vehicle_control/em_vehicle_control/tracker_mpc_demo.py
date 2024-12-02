@@ -114,7 +114,7 @@ class Tracker(Node):
         Control loop that manages and runs the MPC tracker,
         and publishes velocity commands
         """
-        self.get_logger().info("ROS tracker looping")
+        # self.get_logger().info("ROS tracker looping")
         if self.path is None:
             return
         robot_pose = self.get_robot_pose()
