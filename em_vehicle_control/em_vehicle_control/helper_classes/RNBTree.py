@@ -2,7 +2,7 @@
 Road Network Behaviour Tree
 """
 
-from typing import Optional, List, Dict, Union, Tuple
+from typing import Optional, List, Dict, Union, Tuple, Callable
 import copy
 
 import py_trees
@@ -37,6 +37,7 @@ RRT_GOAL_RADIUS = 0.1  # m
 NEAR_TO_PATH_RADIUS = 0.05  # m
 NEAR_TO_PATH_ANGLE = 0.8  # rad, high just to ensure direction is correct
 NEAR_TO_GOAL_RADIUS = 0.05
+NEAR_TO_GOAL_ANGLE = 0.1  # rad
 
 blackboard = Blackboard()
 """
@@ -196,232 +197,324 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
 
     def __init__(self, robot_name: str):
         super().__init__("Plan Path for Robot")
-        self.robot_name = robot_name
-        self.robot_type = None
+        self.robot_name: str = robot_name
+        self.robot_type: AllVehicles = None
+        self.robot_state: str = None
+        self.robot_pose: PosePt2D = None
+        self.robot_goal: PosePt2D = None
+        self.pose_path: List[PosePathPoint] = None
+        self.node_path: List[int] = None
+        self.geometry_path: List[LineString] = None
+        self.graph_network: RoadTrack = None
 
-    def plan_Astar(self, source: PosePt2D, goal: PosePt2D) -> List[int]:
-        pass
+    @staticmethod
+    def make_l2_heuristic(graph: nx.Graph) -> Callable:
+        """
+        Heuristic for A* algorithm
 
-    def plan_rrt_star(self, source: PosePt2D, goal: PosePt2D) -> List[PosePathPoint]:
+        Args:
+            graph (nx.Graph): The graph on which the heuristic will be applied. Each node
+                            in the graph must have a "pos" attribute containing its
+                            (x, y) coordinates as a tuple.
+
+        Returns:
+            Callable[[int, int], float]: A heuristic function that calculates the
+                                        Euclidean distance between two nodes `u` and `v`
+                                        based on their "pos" attributes.
+        """
+
+        def l2_heuristic(u, v):
+            pos_u = graph.nodes[u]["pos"]
+            pos_v = graph.nodes[v]["pos"]
+            return np.sqrt((pos_u[0] - pos_v[0]) ** 2 + (pos_u[1] - pos_v[1]) ** 2)
+
+        return l2_heuristic
+
+    def plan_Astar(self, source: int, goal: int) -> None:
+        """
+        Runs Astar algorithm
+
+        Args:
+            source(int): Source node
+            goal(int): Goal node
+        """
+        heuristic = self.make_l2_heuristic(self.graph_network.dynamic_graph)
+        self.node_path = nx.astar_path(
+            self.graph_network.dynamic_graph, source, goal, heuristic
+        )
+        self.geometry_path = self.convert_nodes_to_geometry_path(
+            self.graph_network, self.node_path
+        )
+        self.pose_path = self.convert_to_nodes_to_pose_path(
+            self.graph_network, self.node_path, self.geometry_path
+        )
+        self.set_path()
+
+    def convert_nodes_to_geometry_path(
+        self, graph_network: RoadTrack, node_path: List[int]
+    ) -> List[LineString]:
+        geometry_path = []
+        for u, v in zip(node_path, node_path[1:]):
+            edge_data = graph_network.dynamic_graph.edges[(u, v)]
+            geometry_path.append(edge_data["geometry"])
+        return geometry_path
+
+    def convert_to_nodes_to_pose_path(
+        self,
+        graph_network: RoadTrack,
+        node_path: List[int],
+        geometry_path: List[LineString],
+    ) -> List[PosePathPoint]:
+        """
+        Convert a sequence of nodes and their associated geometries into a pose path.
+
+        Args:
+            graph_network (RoadTrack): The road network object with lane information.
+            node_path (List[int]): Sequence of node indices representing the path.
+            geometry_path (List[LineString]): Geometric path (LineStrings between nodes).
+
+        Returns:
+            List[Tuple[float, float, int]]: Pose path represented as (x, y, gear).
+        """
+        pose_path = []
+        direction_of_first_node = graph_network.dynamic_graph.nodes[node_path[0]][
+            "lane"
+        ]
+        theta = self.robot_pose[2]
+        if direction_of_first_node == "north":
+            current_gear = 1 if 0 <= theta <= np.pi else -1
+        elif direction_of_first_node == "south":
+            current_gear = -1 if 0 <= theta <= np.pi else 1
+        elif direction_of_first_node == "east":
+            current_gear = 1 if -np.pi / 2 <= theta <= np.pi / 2 else -1
+        elif direction_of_first_node == "west":
+            current_gear = -1 if -np.pi / 2 <= theta <= np.pi / 2 else 1
+
+        for u, v, geometry in zip(node_path, node_path[1:], geometry_path):
+            lane_u = graph_network.dynamic_graph.nodes[u]["lane"]
+            lane_v = graph_network.dynamic_graph.nodes[v]["lane"]
+
+            # Gear changes only occur when transitioning between opposite lane directions
+            # (e.g., north and south, east and west). Other transitions are disallowed by graph penalties.
+            gear_change = (
+                (lane_u == "north" and lane_v == "south")
+                or (lane_u == "south" and lane_v == "north")
+                or (lane_u == "east" and lane_v == "west")
+                or (lane_u == "west" and lane_v == "east")
+            )
+
+            if gear_change:
+                current_gear *= -1
+
+            for x, y in geometry.coords:
+                pose_path.append((x, y, current_gear))
+
+        return pose_path
+
+    def plan_rrt_star(self, source: PosePt2D, goal: PosePt2D) -> None:
         """
         Runs RRT* algorithm with Reeds Shepp pathing
 
         Args:
             source(PosePt2D): current pose of the robot
             goal(PosePt2D): desired pose of the robot
-
-        Returns:
         """
         static_obstacles = blackboard.get("static_obstacles")
 
-        pose_path = RRT_star_Reeds_Shepp.create_and_plan(
+        self.pose_path = RRT_star_Reeds_Shepp.create_and_plan(
             source, goal, RRT_GOAL_RADIUS, self.robot_type, static_obstacles
         )
+        self.node_path, self.geometry_path = None, None
+        self.set_path()
 
-        return pose_path
-
-    def find_nearest_point_on_posepoint_path(
-        self, point: Point, path: List[PosePathPoint]
-    ) -> Tuple[int, float]:
+    def set_path(self) -> None:
         """
-        Identifies the closest point on the path to the lookup point.
-        Used to look for closest point to path given by RRT* algorithm 
-        as posepoints are close together, and interpolation is unnecessary.
+        Sets pose, node, and geometry path on the blackboard
+        """
+        robot_paths = blackboard.get("robot_paths")
+        robot_paths[self.robot_name] = {
+            "pose_path": self.pose_path,
+            "node_path": self.node_path,
+            "geometry_path": self.geometry_path,
+        }
+
+    def near_to_point(
+        self,
+        robot_pose: PosePt2D,
+        near_to_radius: float,
+        near_to_angle: Optional[float] = None,
+        point: Optional[PosePt2D] = None,
+        point_AB: Optional[Tuple[PosePathPoint, PosePathPoint]] = None,
+    ) -> bool:
+        """
+        Checks if robot_pose is near to a point, or a point_A and uses point_B to get an angle at point_A.
+        Point_B points to point_A, or the path is [..., point_B, point_A]
+        Either point or point_AB must be filled.
 
         Args:
-            point (Point): Lookup point
-            path (List[PosePathPoint]): Path
+            robot_pose (PosePt2D): robot pose
+            near_to_radius (float): acceptable radius for closeness
+            near_to_angle(Optional[float]): acceptable angle for closeness
+            point (Optional[PosePt2D]): point on path to determine closeness
+            point_AB (Optional[Tuple[PosePathPoint, PosePathPoint]]): 2 points to determine closeness at point A and angle with point B
+        """
+        if (point is None) == (point_AB is None):
+            raise ValueError(
+                "Provide only one of 'point' or 'point_AB', not both or none."
+            )
+
+        if near_to_angle is not None:
+            if point is not None:
+                target_angle = point[2]
+            else:
+                target_angle = np.arctan2(
+                    point_AB[0][1] - point_AB[1][1], point_AB[0][0] - point_AB[1][0]
+                )
+                if point_AB[0][2] == -1:  # reverse gear needed
+                    des_angle = (des_angle + 2 * np.pi) % 2 * np.pi - np.pi
+            if (
+                (target_angle - robot_pose[2] + np.pi) % 2 * np.pi - np.pi
+            ) > near_to_angle:
+                return False
+
+        if point is not None:
+            target_x, target_y = point[0], point[1]
+        else:
+            target_x, target_y = point_AB[0][0], point_AB[0][1]
+        dist = np.sqrt(
+            (target_x - self.robot_pose[0]) ** 2 + (target_y - self.robot_pose[1]) ** 2
+        )
+        if dist > near_to_radius:
+            return False
+        return True
+
+    def path_nearly_finished(self) -> bool:
+        """
+        Checks if path is nearly finished.
+        Uses pose_path, NEAR_TO_GOAL_RADIUS, NEAR_TO_GOAL_ANGLE
+
+        Returns:
+            bool: True if path is nearly finished
+        """
+        last_pose = self.pose_path[-1]
+        second_last_pose = self.pose_path[-2]
+        return self.near_to_point(
+            self.robot_pose,
+            NEAR_TO_GOAL_RADIUS,
+            NEAR_TO_GOAL_ANGLE,
+            point_AB=(last_pose, second_last_pose),
+        )
+
+    def near_to_goal(self) -> bool:
+        """
+        Checks if robot is near to its goal
+        Uses NEAR_TO_GOAL_RADIUS, NEAR_TO_GOAL_ANGLE
+
+        Returns:
+            bool: True if near to goal
+        """
+        return self.near_to_point(
+            self.robot_pose,
+            NEAR_TO_GOAL_RADIUS,
+            NEAR_TO_GOAL_ANGLE,
+            point=self.robot_goal,
+        )
+
+    def near_to_graph(self) -> Tuple[bool, int, PosePt2D]:
+        """
+        Checks if robot is near to a graph node
+        Uses NEAR_TO_PATH_RADIUS, NEAR_TO_PATH_ANGLE
+
+        Note: The logic here is not intuitive. It will always return the nearest unobstructed graph node.
+        Then the bool will return true only if both distance and angle are in acceptable limits.
 
         Returns:
             Tuple:
-                - int: index of closest point on path to the lookup point
-                - float: Distance between both points
+                - bool: True if near to a free node
+                - int: nearest free node
+                - PosePt2D: graph node pose with angle of the path beginning
         """
-        nearest_distance_squared = np.inf
-        nearest_pt_idx = None
-        for idx, pose_point in enumerate(path):
-            dist_squared = (point.x - pose_point[0]) ** 2 + (
-                point.y - pose_point[1]
-            ) ** 2
-            if not dist_squared < nearest_distance_squared**2:
+        blocked_nodes = blackboard.get("blocked_nodes")
+        robot_current_point = Point(self.robot_pose[0], self.robot_pose[1])
+        nearby_nodes_idxs = self.graph_network.get_N_nearest_vertices(
+            robot_current_point, len(blocked_nodes)
+        )  # returns at least 1 more than blocked nodes
+        goal_node_idx = self.graph_network.get_N_nearest_vertices(
+            (self.robot_goal[0], self.robot_goal[1])
+        )
+        for nearby_node_idx in nearby_nodes_idxs:
+            if nearby_node_idx in blocked_nodes:
                 continue
-            nearest_distance_squared = dist_squared
-            nearest_pt_idx = idx
-        return nearest_pt_idx, np.sqrt(nearest_distance_squared)
+            node_point = self.graph_network.dynamic_graph.nodes[nearby_node_idx]["pos"]
+            path = nx.astar_path(
+                self.graph_network.dynamic_graph,
+                nearby_node_idx,
+                goal_node_idx,
+                self.make_l2_heuristic(self.graph_network.dynamic_graph),
+            )
+            second_node_point = self.graph_network.dynamic_graph.nodes[path[1]]["pos"]
+            target_angle = np.arctan2(
+                second_node_point[1] - node_point[1],
+                second_node_point[0] - node_point[0],
+            )  # node_point points to second_node_point
+            dist = np.sqrt(
+                (node_point[0] - self.robot_pose[0]) ** 2
+                + (node_point[1] - self.robot_pose[1]) ** 2
+            )
+            is_near = (
+                dist < NEAR_TO_PATH_RADIUS
+                and (target_angle - self.robot_pose[2] + np.pi) % 2 * np.pi - np.pi
+                > NEAR_TO_PATH_ANGLE
+            )
+            return is_near, nearby_node_idx, (*node_point, target_angle)
 
-    def get_angle_at_posepoint_path(self, path: List[PosePathPoint], index: int) -> float:
+    def get_new_path(self) -> None:
         """
-        Gets the angle of a point on the path with respect to the world frame
-
-        Args:
-            path (List[PosePathPoint]): Path
-            index (int): Index of point to measure angle around
-
-        Returns:
-            float: measured angle
+        Gets new path by checking if near to goal or graph
         """
-        # ensure front and back points are on the same direction path
-        # use central difference formula if possible
-        if (
-            index == 0 or
-            path[index][2] != path[index-1][2]
-        ):
-            back_point = path[index]
+        if self.near_to_goal():
+            self.plan_rrt_star(self.robot_pose, self.robot_goal)
+            return
+        is_near_to_graph, nearest_node_idx, nearest_node_pose = self.near_to_graph()
+        if is_near_to_graph:
+            goal_node_idx = self.graph_network.get_N_nearest_vertices(
+                (self.robot_goal[0], self.robot_goal[1])
+            )
+            self.plan_Astar(nearest_node_idx, goal_node_idx)
+            return
         else:
-            back_point = path[index-1]
-        if (
-            index == len(path) - 1 or
-            path[index][2] != path[index+1][2]
-        ):
-            front_point = path[index]
-        else:
-            front_point = path[index+1]
-        
-        # if fail to find 2 different points with above methd
-        split = 1
-        while front_point == back_point:
-            back_point = path[np.max(index-split, 0)]
-            front_point = path[np.min(index+split, len(path)-1)]
-            split += 1
-        angle = np.arctan2(front_point[1]-back_point[1], front_point[0]-back_point[0])
-        if path[index][2] == -1:
-            # direction is backwards, flip pi rad
-            angle = angle + np.pi
-            angle = (angle + np.pi) % (2 * np.pi) - np.pi # mod 2pi
-        return angle
-
-    def near_to_posepoint_path(self, current_pose: PosePt2D, path: List[PosePathPoint]) -> bool:
-        """
-        Checks if robot is near to a pose point path.
-        Uses global var NEAR_TO_PATH_RADIUS and NEAR_TO_PATH_ANGLE (Is this necessary?)
-
-        Args:
-            current_pose(PosePt2D): robot coordinates (x,y, yaw)
-            path(List[PosePathPoint]): pose path
-
-        Returns:
-            bool: true if near to path
-        """
-        current_pose_pt = Point(current_pose[0], current_pose[1])
-        closest_pt_idx, shortest_distance = self.find_nearest_point_on_posepoint_path(current_pose_pt, path)
-        angle = self.get_angle_at_posepoint_path(path, closest_pt_idx)
-        if (
-            shortest_distance < NEAR_TO_PATH_RADIUS and
-            ((angle - current_pose[2] + np.pi) % 2*np.pi - np.pi) < NEAR_TO_PATH_ANGLE
-        ):
-            return True
-        return False
-
-    def near_to_goal(self, current_pose: PosePt2D, goal: PosePt2D) -> bool:
-        """
-        Checks if the robot is near to the goal, to switch path planning.
-        Not for checking if the robot is at the goal to switch to idle state!
-
-        Args:
-            current_pose(PosePt2D): robot coordinates (x,y, yaw)
-            goal(PosePt2D): goal location
-        
-        Returns:
-            bool: true if near to goal
-        """
-        dist = np.sqrt((current_pose[0] - goal[0])**2 + (current_pose[1] - goal[1])**2)
-        if dist < NEAR_TO_GOAL_RADIUS:
-            return True
-        return False
-
-    def near_to_geom_path(self, current_pose: PosePt2D, path: List[LineString]) -> bool:
-        """
-        Checks if robot is near to a graph edge path.
-        Uses global var NEAR_TO_PATH_RADIUS
-
-        Args:
-            current_pose(PosePt2D): robot coordinates (x,y, yaw)
-            path(List[LineString]): geom path
-
-        Returns:
-            bool: true if near to path
-        """
-        pose = Point(current_pose[0], current_pose[1])
-        nearest_point, _ = find_nearest_point_on_geom_path(pose, path)
-        dist = np.sqrt((current_pose[0] - nearest_point.x)**2 + (current_pose[1] - nearest_point.y)**2)
-        if dist < NEAR_TO_PATH_RADIUS:
-            return True
-        return False
-
-    def near_to_graph_node(self, current_pose: PosePt2D, goal: PosePt2D, graph_network: RoadTrack) -> Tuple[bool, PosePt2D]:
-        """
-        Checks if robot is near to a node.
-        Uses global var NEAR_TO_PATH_RADIUS
-
-        Args:
-            current_pose(PosePt2D): robot coordinates (x,y, yaw)
-            graph_network(RoadTrack): RoadTrack object that contains all nodes
-        
-        Returns:
-            Tuple:
-                - bool: True if near to node
-                - PosePt2D: (x,y,yaw) of nearest node, yaw from running A* on current pose to goal
-        """
-        graph_network
+            self.plan_rrt_star(self.robot_pose, nearest_node_pose)
 
     def update(self) -> Status:
         robot_poses_goals = blackboard.get("robot_poses_goals")
         robot_pose_goal = robot_poses_goals[self.robot_name]
-        robot_pose = robot_pose_goal["pose"]
-        robot_goal = robot_pose_goal["goal"]
+        self.robot_pose = robot_pose_goal["pose"]
+        self.robot_goal = robot_pose_goal["goal"]
         robot_fsms = blackboard.get("robot_FSMs")
         robot_fsm = robot_fsms[self.robot_name]
-        robot_state = robot_fsm.state
+        self.robot_state = robot_fsm.state
         robot_paths = blackboard.get("robot_paths")
         robot_paths = robot_paths[self.robot_name]
-        pose_path = robot_paths.get("pose_path")
-        geometry_path = robot_paths.get("geometry_path")
-        node_path = robot_paths.get("node_path")
-        graph_network = blackboard.get("graph_network")
+        self.pose_path = robot_paths.get("pose_path")
+        self.geometry_path = robot_paths.get("geometry_path")
+        self.node_path = robot_paths.get("node_path")
+        self.graph_network = blackboard.get("graph_network")
         if (
-            robot_state == "move_by_sampling"
-            and pose_path is not None
-            and self.near_to_posepoint_path(robot_pose, pose_path)
+            self.robot_state == "move_by_sampling"
+            or self.robot_state == "move_by_graph"
         ):
-            """
-            in move_by_sampling state
-            no change in path, continue on pose_path
-            """
+            if self.path_nearly_finished():
+                self.get_new_path()
+                return py_trees.common.Status.SUCCESS
+            elif self.near_to_previous_path():
+                # continue on previous path
+                return py_trees.common.Status.SUCCESS
+            else:
+                self.get_new_path()
+                return py_trees.common.Status.SUCCESS
+        elif self.robot_state == "waiting":
+            self.get_new_path()
             return py_trees.common.Status.SUCCESS
-        elif self.near_to_goal(robot_pose):
-            """
-            In waiting, move_by_sampling, or move_by_graph state
-            near to goal, move to goal
-            """
-            new_pose_path = self.plan_rrt_star(robot_pose, robot_goal)
-
-            # TODO process path here
-            return py_trees.common.Status.SUCCESS
-        elif (
-            robot_state == "move_by_graph"
-            and node_path is not None
-            and self.near_to_geom_path(robot_pose, geometry_path)
-        ):
-            """
-            in move_by_graph state,
-            no change in path, continue on pose_path
-            """
-            return py_trees.common.Status.SUCCESS
-        elif robot_state == "waiting" and self.near_to_graph_node(robot_pose):
-            """
-            in waiting state,
-            check if ready for graph based planing
-            """
-            new_node_path = self.plan_Astar(robot_pose, robot_goal)
-            # TODO process path here
-            return py_trees.common.Status.SUCCESS
-        elif robot_state == "waiting":
-            new_robot_goal = self.get_graph_node_goal(robot_pose)
-            new_pose_path = self.plan_rrt_star(robot_pose, new_robot_goal)
-
-            # TODO process path here
-            return py_trees.common.Status.SUCCESS
-
         # unknown state of system, returns failure
         return py_trees.common.Status.FAILURE
 
@@ -690,6 +783,7 @@ if __name__ == "__main__":
     test_main_fleet_manager_setup = False
     test_fetch_mission_tree = False
     test_compute_danger_area, visualise_compute_danger_area = False, False
+    test_block_static_obstacles = False
     """
     Set up road network
     """
@@ -811,7 +905,7 @@ if __name__ == "__main__":
         blackboard.set("robot_paths", robot_paths)
         blackboard.set("robot_FSMs", fsms)
 
-        compute_danger_area_tree = create_compute_danger_areas_tree(5, robot_names)
+        compute_danger_area_tree = create_compute_danger_areas_tree(robot_names)
         behaviour_tree = py_trees.trees.BehaviourTree(compute_danger_area_tree)
         behaviour_tree.setup()
         behaviour_tree.tick()
@@ -826,7 +920,16 @@ if __name__ == "__main__":
     """
     Test block static obstacles
     """
-    test_obstacle = Point(3.03, 7.85).buffer(0.1)
-    test_graph.block_nodes_within_obstacle(test_obstacle)
-    normal_path = nx.dijkstra_path(test_graph.full_graph, 166, 24)
-    blocked_path = nx.dijkstra_path(test_graph.dynamic_graph, 166, 24)
+    if test_block_static_obstacles:
+        test_obstacle = Point(3.03, 7.85).buffer(0.1)
+        test_graph.block_nodes_within_obstacle(test_obstacle)
+        normal_path = nx.dijkstra_path(test_graph.full_graph, 166, 24)
+        blocked_path = nx.dijkstra_path(test_graph.dynamic_graph, 166, 24)
+        if normal_path != blocked_path:
+            print("Test successful. Path has changed due to obstacle")
+        else:
+            print("Test failed. Path has not changed.")
+
+    """
+    Test path planning
+    """

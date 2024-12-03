@@ -818,6 +818,7 @@ class RoadTrack:
             idx_B,
             weight=weight,
             geometry=line,
+            direction=lane_B
         )
 
     def get_N_nearest_vertices(self, point: Tuple[float, float], N: int = 1) -> List[int]:
