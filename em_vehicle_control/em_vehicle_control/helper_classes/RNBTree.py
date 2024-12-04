@@ -33,11 +33,14 @@ DANGER_AREA_SWEEP_LOOKAHEAD = 2  # times of tick period
 Danger area sweep distance is given by 
 DANGER_AREA_SWEEP_LOOKAHEAD / TICK_RATE * nominal speed of the robot
 """
-RRT_GOAL_RADIUS = 0.1  # m
+RRT_GOAL_RADIUS = 0.01  # m
 NEAR_TO_PATH_RADIUS = 0.05  # m
 NEAR_TO_PATH_ANGLE = 0.8  # rad, high just to ensure direction is correct
-NEAR_TO_GOAL_RADIUS = 0.05
-NEAR_TO_GOAL_ANGLE = 0.1  # rad
+NEAR_TO_PATH_END_RADIUS = 0.05
+NEAR_TO_PATH_END_ANGLE = 0.1  # rad
+NEAR_TO_GOAL_USE_SAMPLING = 0.2  # m
+REEDS_SHEPP_STEP_LARGE = 0.1  # m
+REEDS_SHEPP_STEP_SMALL = 0.01  # m
 
 blackboard = Blackboard()
 """
@@ -51,6 +54,7 @@ Blackboard items:
     graph_network(RoadTrack): use full_graph to access nx.graph object
     static_obstacles(List[Polygon]): list of static obstacles
     blocked_nodes(List[int]): list of blocked graph nodes
+    danger_areas(Dict[str, Polygon]): danger areas corresponding to each robot
 """
 
 
@@ -151,9 +155,9 @@ class HandleStaticObstacles(py_trees.behaviour.Behaviour):
             robot_polygon(Polygon): shape of robot to register
         """
 
+        if not blackboard.exists("static_obstacles"):
+            blackboard.set("static_obstacles", [])
         static_obstacles = blackboard.get("static_obstacles")
-        if static_obstacles is None:
-            static_obstacles = []
 
         static_obstacles.append(robot_polygon)
         blackboard.set("static_obstacles", static_obstacles)
@@ -168,10 +172,9 @@ class HandleStaticObstacles(py_trees.behaviour.Behaviour):
         """
         graph_network = blackboard.get("graph_network")
         blocked_nodes = graph_network.block_nodes_within_obstacle(robot_polygon)
-        try:
-            all_blocked_nodes = blackboard.get("blocked_nodes")
-        except:
-            all_blocked_nodes = []
+        if not blackboard.exists("blocked_nodes"):
+            blackboard.set("blocked_nodes", [])
+        all_blocked_nodes = blackboard.get("blocked_nodes")
         all_blocked_nodes += blocked_nodes
         blackboard.set("blocked_nodes", all_blocked_nodes)
 
@@ -180,7 +183,7 @@ class HandleStaticObstacles(py_trees.behaviour.Behaviour):
         robot_poses_goals = blackboard.get("robot_poses_goals")
         robot_types = blackboard.get("robot_types")
         for robot_name, fsm in robot_fsms.items():
-            if fsm.state() == "idle" or fsm.state() == "error":
+            if fsm.state == "idle" or fsm.state == "error":
                 robot_pose = robot_poses_goals[robot_name]["pose"]
                 robot_type = robot_types[robot_name]
                 robot_type.construct_vehicle(robot_pose)
@@ -199,6 +202,7 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
         super().__init__("Plan Path for Robot")
         self.robot_name: str = robot_name
         self.robot_type: AllVehicles = None
+        self.robot_fsm: RobotFSM = None
         self.robot_state: str = None
         self.robot_pose: PosePt2D = None
         self.robot_goal: PosePt2D = None
@@ -240,7 +244,7 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
         """
         heuristic = self.make_l2_heuristic(self.graph_network.dynamic_graph)
         self.node_path = nx.astar_path(
-            self.graph_network.dynamic_graph, source, goal, heuristic
+            self.graph_network.dynamic_graph, source, goal, heuristic, weight="weight"
         )
         self.geometry_path = self.convert_nodes_to_geometry_path(
             self.graph_network, self.node_path
@@ -319,10 +323,16 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
             source(PosePt2D): current pose of the robot
             goal(PosePt2D): desired pose of the robot
         """
+        if not blackboard.exists("static_obstacles"):
+            static_obstacles = []
+            blackboard.set("static_obstacles", static_obstacles)
         static_obstacles = blackboard.get("static_obstacles")
 
+        local_map = self.graph_network.road_map.get_local_map(
+            [Point(source[0], source[1]), Point(goal[0], goal[1])]
+        )
         self.pose_path = RRT_star_Reeds_Shepp.create_and_plan(
-            source, goal, RRT_GOAL_RADIUS, self.robot_type, static_obstacles
+            source, goal, RRT_GOAL_RADIUS, self.robot_type, local_map, static_obstacles
         )
         self.node_path, self.geometry_path = None, None
         self.set_path()
@@ -337,6 +347,7 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
             "node_path": self.node_path,
             "geometry_path": self.geometry_path,
         }
+        blackboard.set("robot_paths", robot_paths)
 
     def near_to_point(
         self,
@@ -391,7 +402,7 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
     def path_nearly_finished(self) -> bool:
         """
         Checks if path is nearly finished.
-        Uses pose_path, NEAR_TO_GOAL_RADIUS, NEAR_TO_GOAL_ANGLE
+        Uses pose_path, NEAR_TO_PATH_END_RADIUS, NEAR_TO_PATH_END_ANGLE
 
         Returns:
             bool: True if path is nearly finished
@@ -400,23 +411,22 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
         second_last_pose = self.pose_path[-2]
         return self.near_to_point(
             self.robot_pose,
-            NEAR_TO_GOAL_RADIUS,
-            NEAR_TO_GOAL_ANGLE,
+            NEAR_TO_PATH_END_RADIUS,
+            NEAR_TO_PATH_END_ANGLE,
             point_AB=(last_pose, second_last_pose),
         )
 
     def near_to_goal(self) -> bool:
         """
-        Checks if robot is near to its goal
-        Uses NEAR_TO_GOAL_RADIUS, NEAR_TO_GOAL_ANGLE
+        Checks if robot is near to its goal, to use sampling algorithm
+        Uses NEAR_TO_GOAL_USE_SAMPLING
 
         Returns:
             bool: True if near to goal
         """
         return self.near_to_point(
             self.robot_pose,
-            NEAR_TO_GOAL_RADIUS,
-            NEAR_TO_GOAL_ANGLE,
+            NEAR_TO_GOAL_USE_SAMPLING,
             point=self.robot_goal,
         )
 
@@ -434,14 +444,17 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
                 - int: nearest free node
                 - PosePt2D: graph node pose with angle of the path beginning
         """
+        if not blackboard.exists("blocked_nodes"):
+            blocked_nodes = []
+            blackboard.set("blocked_nodes", blocked_nodes)
         blocked_nodes = blackboard.get("blocked_nodes")
-        robot_current_point = Point(self.robot_pose[0], self.robot_pose[1])
+        robot_current_point = (self.robot_pose[0], self.robot_pose[1])
         nearby_nodes_idxs = self.graph_network.get_N_nearest_vertices(
-            robot_current_point, len(blocked_nodes)
+            robot_current_point, len(blocked_nodes) + 1
         )  # returns at least 1 more than blocked nodes
         goal_node_idx = self.graph_network.get_N_nearest_vertices(
             (self.robot_goal[0], self.robot_goal[1])
-        )
+        )[0]
         for nearby_node_idx in nearby_nodes_idxs:
             if nearby_node_idx in blocked_nodes:
                 continue
@@ -452,6 +465,9 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
                 goal_node_idx,
                 self.make_l2_heuristic(self.graph_network.dynamic_graph),
             )
+            if nearby_node_idx == goal_node_idx:
+                # edge case, do RRT to goal
+                return False, None, (*node_point, self.robot_goal[2])
             second_node_point = self.graph_network.dynamic_graph.nodes[path[1]]["pos"]
             target_angle = np.arctan2(
                 second_node_point[1] - node_point[1],
@@ -464,7 +480,7 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
             is_near = (
                 dist < NEAR_TO_PATH_RADIUS
                 and (target_angle - self.robot_pose[2] + np.pi) % 2 * np.pi - np.pi
-                > NEAR_TO_PATH_ANGLE
+                < NEAR_TO_PATH_ANGLE
             )
             return is_near, nearby_node_idx, (*node_point, target_angle)
 
@@ -474,27 +490,36 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
         """
         if self.near_to_goal():
             self.plan_rrt_star(self.robot_pose, self.robot_goal)
+            self.robot_fsm.resume_sampling()
             return
         is_near_to_graph, nearest_node_idx, nearest_node_pose = self.near_to_graph()
         if is_near_to_graph:
             goal_node_idx = self.graph_network.get_N_nearest_vertices(
                 (self.robot_goal[0], self.robot_goal[1])
-            )
+            )[0]
             self.plan_Astar(nearest_node_idx, goal_node_idx)
+            self.robot_fsm.resume_graph()
             return
         else:
             self.plan_rrt_star(self.robot_pose, nearest_node_pose)
+            self.robot_fsm.resume_sampling()
 
     def update(self) -> Status:
         robot_poses_goals = blackboard.get("robot_poses_goals")
         robot_pose_goal = robot_poses_goals[self.robot_name]
         self.robot_pose = robot_pose_goal["pose"]
+        self.robot_type = blackboard.get("robot_types")[self.robot_name]
         self.robot_goal = robot_pose_goal["goal"]
         robot_fsms = blackboard.get("robot_FSMs")
-        robot_fsm = robot_fsms[self.robot_name]
-        self.robot_state = robot_fsm.state
+        self.robot_fsm = robot_fsms[self.robot_name]
+        self.robot_state = self.robot_fsm.state
+        if not blackboard.exists("robot_paths"):
+            robot_paths = {}
+            blackboard.set("robot_paths", robot_paths)
         robot_paths = blackboard.get("robot_paths")
-        robot_paths = robot_paths[self.robot_name]
+        robot_paths = robot_paths.get(self.robot_name)
+        if robot_paths is None:
+            robot_paths = {}
         self.pose_path = robot_paths.get("pose_path")
         self.geometry_path = robot_paths.get("geometry_path")
         self.node_path = robot_paths.get("node_path")
@@ -683,6 +708,241 @@ def create_compute_danger_areas_tree(robot_names: List[str]):
     return root
 
 
+class DetermineRobotsPriority(py_trees.behaviour.Behaviour):
+    def __init__(self):
+        super().__init__("Determine Robots Priority")
+        self.robot_names: List[str] = None
+        self.robot_fsms: Dict[str, RobotFSM] = None
+        self.danger_areas: Dict[str, Polygon] = None
+        self.robot_types: Dict[str, AllVehicles] = None
+        self.robot_poses_goals: Dict[str, Dict] = None
+        self.static_obstacles: List[Polygon] = None
+        self.robot_paths: Dict[str, Dict] = None
+        self.graph_network: RoadTrack = None
+
+        self.priority_list = []
+
+    def goal_not_blocked(self, robot_A: str, robot_B: str) -> bool:
+        """
+        Checks if robot_B's goal is blocked by robot_A's footprint
+
+        Args:
+            robot_A (str): name of robot_A
+            robot_B (str): name of robot_B
+        Returns:
+            bool: True if robot_A does not block robot_B's goal
+        """
+        robot_B_old_pose_path = self.robot_paths[robot_B]["pose_path"]
+        robot_B_last_pose = robot_B_old_pose_path[-1]
+        goal = Point(robot_B_last_pose[0], robot_B_last_pose[1])
+        robot_A_pose = self.robot_poses_goals[robot_A]["pose"]
+        self.robot_types[robot_A].construct_vehicle(robot_A_pose)
+        robot_A_footprint = self.robot_types[robot_A].vehicle_model
+        robot_A_obstacle = robot_A_footprint.buffer(DANGER_AREA_BUFFER)
+
+        return not robot_A_obstacle.contains(goal)
+
+    def replan_sampling(self, robot_A: str, robot_B: str) -> None:
+        """
+        Replans robot_B such that it does not collide with robot_A.
+        Sets robot_A to waiting, but at lower priority than robot_B
+
+        Args:
+            robot_A (str): name of robot_A
+            robot_B (str): name of robot_B
+        """
+        self.robot_fsms[robot_A].wait()
+        robot_A_pose = self.robot_poses_goals[robot_A]["pose"]
+        robot_B_pose = self.robot_poses_goals[robot_B]["pose"]
+        self.robot_types[robot_A].construct_vehicle(robot_A_pose)
+        robot_A_footprint = self.robot_types[robot_A].vehicle_model
+        robot_A_obstacle = robot_A_footprint.buffer(DANGER_AREA_BUFFER)
+        robot_B_old_pose_path = self.robot_paths[robot_B]["pose_path"]
+        robot_B_last_pose = robot_B_old_pose_path[-1]
+        source = Point(robot_B_pose[0], robot_B_pose[1])
+        goal = Point(robot_B_last_pose[0], robot_B_last_pose[1])
+        local_map = self.graph_network.road_map.get_local_map([source, goal])
+        pose_path = RRT_star_Reeds_Shepp.create_and_plan(
+            source,
+            goal,
+            RRT_GOAL_RADIUS,
+            self.robot_type,
+            local_map,
+            self.static_obstacles + robot_A_obstacle,
+        )
+        robot_B_paths = {
+            "pose_path": pose_path,
+            "node_path": None,
+            "geometry_path": None
+        }
+        self.robot_paths[robot_B] = robot_B_paths
+        blackboard.set("robot_paths", self.robot_paths)
+
+    def prioritise_using_lane_rules(self, robot_A: str, robot_B: str) -> bool:
+        """
+        Checks the priority between robot_A and robot_B using lanes
+
+        Args:
+            robot_A (str): name of robot_A
+            robot_B (str): name of robot_B
+        Returns:
+            bool: True if robot_A has higher priority than robot_B
+        """
+        robot_A_node_path = self.robot_paths[robot_A]["node_path"]
+        robot_B_node_path = self.robot_paths[robot_B]["node_path"]
+        nodes = self.graph_network.dynamic_graph.nodes
+        # robot_A_stays_on_same_lane = (nodes[robot_A_current_node]["lane"] == nodes[robot_A_next_node]["lane"])
+        # robot_B_stays_on_same_lane = (nodes[robot_B_current_node]["lane"] == nodes[robot_B_next_node]["lane"])
+        # if robot_A_stays_on_same_lane != robot_B_stays_on_same_lane:
+        #     return robot_A_stays_on_same_lane # the robot that stays on the same lane has priority
+        if nodes[robot_A_node_path[0]]["lane"] == nodes[robot_B_node_path[0]]["lane"]:
+            return self.prioritise_robots_on_same_lane(robot_A, robot_B)
+        else:
+            return self.prioritise_robots_on_different_lanes(robot_A, robot_B)
+        
+    def prioritise_robots_on_same_lane(self, robot_A: str, robot_B: str) -> bool:
+        """
+        Checks the priority between robot_A and robot_B on the same lane
+
+        Args:
+            robot_A (str): name of robot_A
+            robot_B (str): name of robot_B
+        Returns:
+            bool: True if robot_A has higher priority than robot_B
+        """
+        robot_A_node_path = self.robot_paths[robot_A]["node_path"]
+        robot_B_node_path = self.robot_paths[robot_B]["node_path"]
+        robot_A_pose_path = self.robot_paths[robot_A]["pose_path"]
+        robot_B_pose_path = self.robot_paths[robot_B]["pose_path"]
+        if robot_A_pose_path[0][2] != robot_B_pose_path[0][2]:
+            # for their DA to overlap AND
+            # both robots to be in the same lane AND
+            # their direction to be opposite
+            # collision is imminent
+            self.robot_fsms[robot_A].lose_control()
+            self.robot_fsms[robot_B].lose_control()
+            blackboard.set("robot_fsms", self.robot_fsms)
+            return True
+        nodes = self.graph_network.dynamic_graph.nodes
+        lane_direction = nodes[robot_A_node_path[0]]["lane"]
+        if lane_direction == "north":
+            # larger y has priority
+            return nodes[robot_A_node_path[0]]["pos"][1] > nodes[robot_B_node_path[0]]["pos"][1] 
+        elif lane_direction == "south":
+            # smaller y has priority
+            return nodes[robot_A_node_path[0]]["pos"][1] < nodes[robot_B_node_path[0]]["pos"][1] 
+        elif lane_direction == "east":
+            # larger x has priority
+            return nodes[robot_A_node_path[0]]["pos"][0] > nodes[robot_B_node_path[0]]["pos"][0] 
+        else: # west
+            # smaller x has priority
+            return nodes[robot_A_node_path[0]]["pos"][0] < nodes[robot_B_node_path[0]]["pos"][0] 
+
+    def prioritise_robots_on_different_lanes(self, robot_A: str, robot_B: str) -> bool:
+        """
+        Checks the priority between robot_A and robot_B on different lanes
+
+        Args:
+            robot_A (str): name of robot_A
+            robot_B (str): name of robot_B
+        Returns:
+            bool: True if robot_A has higher priority than robot_B
+        """
+        danger_area_A = self.danger_areas[robot_A]
+        danger_area_B = self.danger_areas[robot_B]
+        danger_area_overlap = danger_area_A.intersection(danger_area_B)
+        intersections = self.graph_network.road_intersections
+        for intersection in intersections:
+            if danger_area_overlap.overlaps(intersection):
+                return False # maintain old priority
+        else:
+            # danger area outside of intersection. Unknown situation.
+            self.robot_fsms[robot_A].lose_control()
+            self.robot_fsms[robot_B].lose_control()
+            blackboard.set("robot_fsms", self.robot_fsms)
+            return True
+
+    def has_higher_priority(self, robot_A: str, robot_B: str) -> bool:
+        """
+        Checks the priority between robot_A and robot_B
+
+        Args:
+            robot_A (str): name of robot_A
+            robot_B (str): name of robot_B
+        Returns:
+            bool: True if robot_A has higher priority than robot_B
+        """
+        state_A = self.robot_fsms[robot_A].state
+        state_B = self.robot_fsms[robot_B].state
+        if state_B == "idle" or "error":
+            # set A to wait, decide on movement next tick
+            self.robot_fsms[robot_A].wait()
+            blackboard.set("robot_fsms", self.robot_fsms)
+            return True
+        if state_B == "waiting":
+            # B is waiting, it has priority
+            # B should be checked first
+            return False
+        if state_A == "waiting":
+            # A is waiting, it has priority
+            return True
+        danger_area_A = self.danger_areas[robot_A]
+        danger_area_B = self.danger_areas[robot_B]
+        if not danger_area_A.intersects(danger_area_B):
+            # no intersection, no priority change
+            return False
+        if state_A == state_B == "move_by_sampling":
+            if self.goal_not_blocked(robot_A, robot_B):
+                self.replan_sampling(robot_A, robot_B)  # TODO check if covers goal!
+                return False
+            elif self.goal_not_blocked(robot_B, robot_A):
+                self.replan_sampling(robot_B, robot_A)
+                return True
+            else:
+                self.robot_fsms[robot_A].lose_control()
+                self.robot_fsms[robot_B].lose_control()
+                blackboard.set("robot_fsms", self.robot_fsms)
+                return True # both robots in error state
+        if state_A == "move_by_sampling" and state_B == "move_by_graphing":
+            # sampling method has priority
+            return True
+        if state_B == "move_by_sampling" and state_A == "move_by_graphing":
+            return False
+        if state_A == state_B == "move_by_graph":
+            return self.prioritise_using_lane_rules(robot_A, robot_B)
+
+    def determine_priority(self, robot_name: str) -> None:
+        """robot_fsms
+        Slots robot into its correct priority
+        As long as robot has higher priority, it would be slot into the list.
+        Else, it is appended at the end.
+        """
+        if self.priority_list == []:
+            self.priority_list.append(robot_name)
+            return
+        for index, prioritised_robot in enumerate(self.priority_list):
+            if self.has_higher_priority(robot_name, prioritised_robot):
+                self.priority_list.insert(index, robot_name)
+                return
+        else:
+            self.priority_list.append(robot_name)
+
+    def update(self) -> Status:
+        self.robot_names = blackboard.get("robot_names")
+        self.robot_fsms = blackboard.get("robot_fsms")
+        self.danger_areas = blackboard.get("danger_areas")
+        self.robot_types = blackboard.get("robot_types")
+        self.robot_poses_goals = blackboard.get("robot_poses_goals")
+        self.static_obstacles = blackboard.get("static_obstacles")
+        self.robot_paths = blackboard.get("robot_paths")
+        self.graph_network = blackboard.get("graph_network")
+
+        for robot_name in robot_names:
+            self.determine_priority(robot_name)
+
+        return py_trees.common.Status.SUCCESS
+
+
 def create_prioritise_and_move_robots_tree():
     root = py_trees.composites.Sequence(
         "Prioritise and Move Robots Subtree", memory=False
@@ -780,9 +1040,9 @@ class FleetManagerTree:
 
 
 if __name__ == "__main__":
-    test_main_fleet_manager_setup = False
-    test_fetch_mission_tree = False
-    test_compute_danger_area, visualise_compute_danger_area = False, False
+    test_main_fleet_manager_setup = True
+    test_fetch_mission_tree = True
+    test_compute_danger_area, visualise_compute_danger_area = True, False
     test_block_static_obstacles = False
     """
     Set up road network
@@ -802,7 +1062,7 @@ if __name__ == "__main__":
     """
     if test_main_fleet_manager_setup:
         print("TEST main fleet manager setup")
-        FMTree = FleetManagerTree(3, test_map, [Edison(), Edison(), EdyMobile()])
+        FMTree = FleetManagerTree(3, test_graph, [Edison(), Edison(), EdyMobile()])
         FMTree.setup()
         print("  Total number of robots:", blackboard.get("num_robots"))
         print(
@@ -820,7 +1080,7 @@ if __name__ == "__main__":
     Test fetch missions subtree
     """
     if test_fetch_mission_tree:
-        FMTree = FleetManagerTree(3, test_map, [Edison(), Edison(), EdyMobile()])
+        FMTree = FleetManagerTree(3, test_graph, [Edison(), Edison(), EdyMobile()])
         FMTree.setup()
         fetch_missions_tree = create_fetch_missions_tree()
         behaviour_tree = py_trees.trees.BehaviourTree(fetch_missions_tree)
@@ -889,7 +1149,7 @@ if __name__ == "__main__":
         geometry_path = []
         for i in range(len(node_path) - 1):
             geometry_path.append(
-                test_graph.full_graph.edges[(node_path[i], node_path[i + 1])][
+                test_graph.dynamic_graph.edges[(node_path[i], node_path[i + 1])][
                     "geometry"
                 ]
             )
@@ -921,15 +1181,54 @@ if __name__ == "__main__":
     Test block static obstacles
     """
     if test_block_static_obstacles:
+        print("TEST block static obstacles")
         test_obstacle = Point(3.03, 7.85).buffer(0.1)
         test_graph.block_nodes_within_obstacle(test_obstacle)
         normal_path = nx.dijkstra_path(test_graph.full_graph, 166, 24)
         blocked_path = nx.dijkstra_path(test_graph.dynamic_graph, 166, 24)
         if normal_path != blocked_path:
-            print("Test successful. Path has changed due to obstacle")
+            print("  Test successful. Path has changed due to obstacle")
         else:
-            print("Test failed. Path has not changed.")
+            print("  Test failed. Path has not changed.")
 
     """
     Test path planning
     """
+    robot_names = ["test_rrt_to_goal", "test_Astar_to_goal", "test_rrt_to_graph"]
+    FMTree = FleetManagerTree(
+        3,
+        test_graph,
+        [EdyMobile(), EdyMobile(), EdyMobile()],
+        robot_names,
+    )
+    FMTree.setup()
+    test_graph.reset_dynamic_graph()
+    fsms = blackboard.get("robot_FSMs")
+    rpg = {}
+    # node 26 at (3.0325, 7.87), 148 at (3.93, 8.16)
+    # [26, 25, 27, 167, 168, 148] are connected
+    rpg["test_rrt_to_goal"] = {"pose": (3.03, 7.8, 0), "goal": (3.033, 7.87, np.pi / 2)}
+    fsms["test_rrt_to_goal"].startup()
+    rpg["test_Astar_to_goal"] = {
+        "pose": (3.033, 7.87, np.pi / 2),
+        "goal": (7.22, 15.45, 0),
+    }
+    fsms["test_Astar_to_goal"].startup()
+    rpg["test_rrt_to_graph"] = {"pose": (7.2, 15.2, 0), "goal": (7.226, 15.6, -np.pi)}
+    fsms["test_rrt_to_graph"].startup()
+
+    blackboard.set("robot_poses_goals", rpg)
+    print("TEST path planning")
+    plan_paths_tree = create_plan_paths_tree(robot_names)
+    behaviour_tree = py_trees.trees.BehaviourTree(plan_paths_tree)
+    behaviour_tree.setup()
+    behaviour_tree.tick()
+
+    robot_paths = blackboard.get("robot_paths")
+    for robot_name in robot_names:
+        # node_path = robot_paths[robot_name]["node_path"]
+        pose_path = robot_paths[robot_name]["pose_path"]
+        # test_map.visualise(graph= test_graph.full_graph, path=node_path)
+        # test_map.visualise(graph= test_graph.full_graph, pose_path=pose_path)
+        test_map.visualise(pose_path=pose_path)
+    print("  Test successful if no errors")

@@ -153,8 +153,9 @@ class RoadMap:
         show_stations: bool = True,
         graph: Optional[nx.Graph] = None,
         path: Optional[List] = None,
+        pose_path: Optional[List[Tuple[float, float, int]]] = None,
     ) -> None:
-        """Visualises the built map"""
+        """Visualises the built map and optionally a pose path"""
         _, ax = plt.subplots()
         exterior_polygon, interior_polygons = self.shapely_to_mplpolygons(self.map)
         ax.add_patch(exterior_polygon)
@@ -176,7 +177,6 @@ class RoadMap:
                     alpha=0.5,
                 )
                 ax.add_patch(station_polygon)
-                # print(station[1][0], station[1][1], station[1][0]+station[3]*np.cos(station[2]), station[1][1]+station[3]*np.sin(station[2]))
                 ax.arrow(
                     station[1][0],
                     station[1][1],
@@ -202,7 +202,7 @@ class RoadMap:
                 node_size=25,
                 node_color="blue",
                 label="Right Lane",
-                ax=ax
+                ax=ax,
             )
             nx.draw_networkx_nodes(
                 graph,
@@ -211,7 +211,7 @@ class RoadMap:
                 node_size=25,
                 node_color="red",
                 label="Left Lane",
-                ax=ax
+                ax=ax,
             )
             nx.draw_networkx_nodes(
                 graph,
@@ -220,7 +220,7 @@ class RoadMap:
                 node_size=25,
                 node_color="green",
                 label="Right Lane",
-                ax=ax
+                ax=ax,
             )
             nx.draw_networkx_nodes(
                 graph,
@@ -229,7 +229,7 @@ class RoadMap:
                 node_size=25,
                 node_color="violet",
                 label="Left Lane",
-                ax=ax
+                ax=ax,
             )
 
             for u, v, data in graph.edges(data=True):
@@ -237,14 +237,7 @@ class RoadMap:
                     line = data["geometry"]  # This should be a LineString
                     x, y = line.xy  # Get the x, y coordinates from the LineString
                     ax.plot(x, y, color="gray")
-                    # # Get the midpoint of the edge
-                    # midpoint_x = (x[0] + x[-1]) / 2
-                    # midpoint_y = (y[0] + y[-1]) / 2
 
-                    # # Get the edge weight
-                    # weight = data.get("weight", None)
-                    # if weight is not None:
-                    #     ax.text(midpoint_x, midpoint_y, f"{weight:.2f}", fontsize=8, color="black")
             if path is not None:
                 path_edges = list(zip(path, path[1:]))
                 nx.draw_networkx_edges(
@@ -257,432 +250,19 @@ class RoadMap:
                     node_size=5,
                     node_color="orange",
                 )
-                
+
             nx.draw_networkx_labels(graph, pos, ax=ax, font_size=8, font_color="black")
+
+        # Plot the pose path
+        if pose_path is not None:
+            for i in range(len(pose_path) - 1):
+                x1, y1, direction1 = pose_path[i]
+                x2, y2, _ = pose_path[i + 1]
+                color = "green" if direction1 == 1 else "red"
+                ax.plot([x1, x2], [y1, y2], color=color, linewidth=2)
 
         ax.axis("scaled")
         plt.show()
-
-
-class RoadGraph:
-    def __init__(
-        self,
-        min_length: float,
-        min_width: float,
-        road_map: RoadMap,
-        visualise: bool = False,
-    ) -> None:
-        """
-        Class that creates grid of dots, conencts the edges between nearest vertices
-        """
-        self.min_length = min_length
-        self.min_width = min_width
-        self.road_map = road_map
-        self.visualise = visualise
-        self.buffer_distance = 0.1
-
-        self.max_length = 2 * self.min_length
-        self.vertices = []
-        self.global_kdtree = None
-        self.global_graph: nx.Graph = None
-        self.full_graph: nx.Graph = None
-
-        self.make_vertices()
-
-    def _create_graph(
-        self, points: list, min_length: float, max_length: float
-    ) -> nx.Graph:
-        """
-        points: list of (x,y) points
-        min_length: minimum edge length (L2) between 2 points
-        max_length: maximum edge length between 2 points
-        returns the graph of edges and vertices
-        """
-        self.global_kdtree = KDTree(points)
-        self.global_graph = nx.Graph()
-        for idx, point in enumerate(points):
-            self.global_graph.add_node(idx, pos=point)
-
-        # for every point, search for their neighbour
-        for idx, point in enumerate(points):
-            indices = self.global_kdtree.query_ball_point(point, max_length)
-            for neighbour_idx in indices:
-                if neighbour_idx == idx:
-                    # avoid calling itself
-                    continue
-                dist = np.linalg.norm(np.array(point) - np.array(points[neighbour_idx]))
-                if not min_length <= dist <= max_length:
-                    # outside allowable lengths
-                    continue
-                candidate_edge = LineString([points[neighbour_idx], point])
-                if not candidate_edge.within(self.road_map.map):
-                    # motion path is disallowed
-                    continue
-                # TODO: decide on weights
-                self.global_graph.add_edge(idx, neighbour_idx, weight=dist)
-        return self.global_graph
-
-    def make_vertices(self) -> None:
-        """
-        min_length: the minimum safe distance between vertices parallel to the direction of the road
-        min_width: the minimum safe distance between vertices perpendicular to the direction of the road
-        visualise: plots the grid on the map
-        min_length should be longer than min_width
-        """
-        buffered_map = self.road_map.map.buffer(-self.buffer_distance)
-        for road in self.road_map.roads:
-            if road.direction == -1:  # x longer than y
-                # x is the length and y is the width
-                min_x_dist = self.min_length
-                min_y_dist = self.min_width
-            else:
-                min_x_dist = self.min_width
-                min_y_dist = self.min_length
-            x_segments = np.floor(road.x_length / min_x_dist).astype(int)
-            y_segments = np.floor(road.y_length / min_y_dist).astype(int)
-            x_seg_points = [
-                (road.x_max - road.x_min) / (x_segments * 2) * (2 * i + 1) + road.x_min
-                for i in range(x_segments)
-            ]
-            y_seg_points = [
-                (road.y_max - road.y_min) / (y_segments * 2) * (2 * i + 1) + road.y_min
-                for i in range(y_segments)
-            ]
-            grid_points = list(itertools.product(x_seg_points, y_seg_points))
-            for point in grid_points:
-                if Point(point).within(buffered_map):
-                    self.vertices.append(point)
-
-        self.global_graph = self._create_graph(
-            self.vertices, self.min_length, self.max_length
-        )
-
-        if self.visualise:
-            self.road_map.visualise(True, True, self.global_graph)
-
-    def get_N_nearest_vertices(
-        self, point: Tuple, N: int = 1
-    ) -> list[int]:
-        """
-        point: Queried point (x,y)
-        N: number of points to return
-        returns N nearest vertices to the queried point
-        """
-        _, idx = self.global_kdtree.query(point, N)
-        return idx
-
-    def add_edges_between_consecutive_rings(
-        self,
-        local_graph: nx.Graph,
-        current_side: List[Tuple[float, float]],
-        next_side: List[Tuple[float, float]],
-        point_indices: dict[int : Tuple[float, float]],
-        local_graph_bias: float,
-    ) -> nx.Graph:
-        """
-        Add edges between points on the current side and the next side of the local graph.
-
-        local_graph: The networkx graph representing the local graph.
-        current_side: List of points on the current ring's side (top, right, bottom, or left).
-        next_side: List of points on the next ring's side.
-        point_indices: Dictionary mapping points to their indices in the graph.
-        local_graph_bias: Bias factor for the local graph's edge weights.
-        """
-        for i in range(len(current_side)):  # Avoid going out of bounds
-            candidate_edge = LineString([next_side[i], current_side[i]])
-            if not candidate_edge.within(self.road_map.map):
-                continue
-            # Connect current point to two closest points in the next ring
-            local_graph.add_edge(
-                point_indices[current_side[i]],
-                point_indices[next_side[i]],
-                weight=local_graph_bias
-                * np.linalg.norm(np.array(next_side[i]) - np.array(current_side[i])),
-            )
-        for i in range(len(current_side)):
-            candidate_edge = LineString([next_side[i + 1], current_side[i]])
-            if not candidate_edge.within(self.road_map.map):
-                continue
-            local_graph.add_edge(
-                point_indices[current_side[i]],
-                point_indices[next_side[i + 1]],
-                weight=local_graph_bias
-                * np.linalg.norm(
-                    np.array(next_side[i + 1]) - np.array(current_side[i])
-                ),
-            )
-
-        return local_graph
-
-    def add_edges_between_following_rings(
-        self,
-        local_graph: nx.Graph,
-        current_side: List[Tuple[float, float]],
-        following_side: List[Tuple[float, float]],
-        point_indices: dict[int : Tuple[float, float]],
-        local_graph_bias: float,
-    ) -> nx.Graph:
-        """
-        Add edges between points on the current side and the following side of the local graph.
-
-        local_graph: The networkx graph representing the local graph.
-        current_side: List of points on the current ring's side (top, right, bottom, or left).
-        following_side: List of points on the following ring's side.
-        point_indices: Dictionary mapping points to their indices in the graph.
-        local_graph_bias: Bias factor for the local graph's edge weights.
-        """
-        for i in range(len(current_side)):  # Avoid going out of bounds
-            candidate_edge = LineString([following_side[i], current_side[i]])
-            if not candidate_edge.within(self.road_map.map):
-                continue
-            # Connect current point to two closest points in the next ring
-            local_graph.add_edge(
-                point_indices[current_side[i]],
-                point_indices[following_side[i + 1]],
-                weight=local_graph_bias
-                * np.linalg.norm(
-                    np.array(following_side[i + 1]) - np.array(current_side[i])
-                ),
-            )
-
-        return local_graph
-
-    def generate_local_graph(
-        self,
-        pose: Tuple[float, float, float],
-        step_size: float,
-        num_rings: int = 5,
-        multiplier: float = 1.3,
-    ) -> nx.Graph:
-        """
-        pose: tuple containing the x, y, yaw values of the robot
-        step_size: step size of each ring in metres
-        num_rings: number of rings of points surrounding the robot
-        multiplier: scales the rings distance by multiplier ^ ring number
-
-        returns: local graph generated around
-        """
-        # first generate all points about the origin
-        # then translate and rotate all points
-        local_graph = nx.Graph()
-        current_index = 0
-        origin = (pose[0], pose[1])
-        local_graph.add_node(current_index, pos=origin)
-        c_theta = np.cos(pose[2])
-        s_theta = np.sin(pose[2])
-        rings_of_points = []
-        point_indices = {}
-        current_index += 1
-        local_graph_bias = 0.5
-        for i in range(1, num_rings + 1):
-            sides = [[], [], [], []]  # top, right, bottom, left
-            side_transforms = [
-                (
-                    lambda i, j: (
-                        (-i + 2 * j) * step_size * multiplier**i,
-                        i * step_size * multiplier**i * 0.6,
-                    )
-                ),  # Top
-                (
-                    lambda i, j: (
-                        i * step_size * multiplier**i,
-                        (i - 2 * j) * step_size * multiplier**i * 0.6,
-                    )
-                ),  # Right
-                (
-                    lambda i, j: (
-                        (i - 2 * j) * step_size * multiplier**i,
-                        -i * step_size * multiplier**i * 0.6,
-                    )
-                ),  # Bottom
-                (
-                    lambda i, j: (
-                        -i * step_size * multiplier**i,
-                        (-i + 2 * j) * step_size * multiplier**i * 0.6,
-                    )
-                ),  # Left
-            ]
-            for j in range(i):
-                for side_idx, transform in enumerate(side_transforms):
-                    x_temp, y_temp = transform(i, j)
-
-                    transformed_point = (
-                        x_temp * c_theta - y_temp * s_theta + pose[0],
-                        x_temp * s_theta + y_temp * c_theta + pose[1],
-                    )
-                    sides[side_idx].append(transformed_point)
-            rings_of_points.append(sides)
-
-            for side_points in sides:
-                for point in side_points:
-                    point_indices[point] = current_index
-                    local_graph.add_node(
-                        current_index, pos=point
-                    )  # Add node to the graph with index
-                    current_index += 1
-        for points in rings_of_points[0]:
-            # first add connections to origin
-            local_graph.add_edge(
-                0,
-                point_indices[points[0]],
-                weight=local_graph_bias * np.linalg.norm(np.array(points[0])),
-            )
-        if num_rings >= 2:
-            for points in rings_of_points[1]:
-                local_graph.add_edge(
-                    0,
-                    point_indices[points[1]],
-                    weight=local_graph_bias * np.linalg.norm(np.array(points[1])),
-                )
-
-        sides = [x for x in range(4)]
-        for ring_idx in range(len(rings_of_points) - 1):
-            # Unpack the current ring and the next ring
-            current_ring = rings_of_points[ring_idx]
-            next_ring = rings_of_points[ring_idx + 1]
-            following_ring = None
-            if ring_idx < len(rings_of_points) - 2:
-                following_ring = rings_of_points[ring_idx + 2]
-
-            # Loop over each side (top, right, bottom, left)
-            for side_idx in sides:
-                current_side = current_ring[side_idx]
-                next_side = next_ring[side_idx]
-
-                local_graph = self.add_edges_between_consecutive_rings(
-                    local_graph,
-                    current_side,
-                    next_side,
-                    point_indices,
-                    local_graph_bias,
-                )
-                if following_ring is not None:
-                    following_side = following_ring[side_idx]
-                    local_graph = self.add_edges_between_following_rings(
-                        local_graph,
-                        current_side,
-                        following_side,
-                        point_indices,
-                        local_graph_bias,
-                    )
-
-            # Handle corner connections
-            for i in range(4):
-                candidate_edge = LineString(
-                    [current_ring[i][0], next_ring[(i - 1) % 4][-1]]
-                )
-                if not candidate_edge.within(self.road_map.map):
-                    # motion path is disallowed
-                    continue
-                local_graph.add_edge(
-                    point_indices[
-                        current_ring[i][0]
-                    ],  # First point in each side of the current ring
-                    point_indices[
-                        next_ring[(i - 1) % 4][-1]
-                    ],  # Last point in the first anticlockwise side of the next ring
-                    weight=local_graph_bias
-                    * np.linalg.norm(
-                        np.array(current_ring[i][0])
-                        - np.array(next_ring[(i - 1) % 4][-1])
-                    ),
-                )
-            for i in range(4):
-                if following_ring is not None:
-                    candidate_edge = LineString(
-                        [current_ring[i][0], following_ring[(i - 1) % 4][-1]]
-                    )
-                    if not candidate_edge.within(self.road_map.map):
-                        # motion path is disallowed
-                        continue
-                    local_graph.add_edge(
-                        point_indices[
-                            current_ring[i][0]
-                        ],  # First point in each side of the current ring
-                        point_indices[
-                            following_ring[(i - 1) % 4][-1]
-                        ],  # Last point in the first anticlockwise side of the next ring
-                        weight=local_graph_bias
-                        * np.linalg.norm(
-                            np.array(current_ring[i][0])
-                            - np.array(following_ring[(i - 1) % 4][-1])
-                        ),
-                    )
-
-        # pos = nx.get_node_attributes(local_graph, 'pos')
-        # labels = {node: f"({round(x, 2)}, {round(y, 2)})" for node, (x, y) in pos.items()}
-        # nx.draw(local_graph, pos, labels=labels, with_labels=False, node_size=10)
-        # ax = plt.gca()  # Get current axes
-        # for edge in local_graph.edges():
-        #     # Get positions of the nodes at the ends of the edge
-        #     start_pos = pos[edge[0]]
-        #     end_pos = pos[edge[1]]
-
-        #     # Create a FancyArrowPatch for the edge
-        #     arrow = FancyArrowPatch(start_pos, end_pos, arrowstyle='->', color='grey', mutation_scale=30.0)
-        #     # ax.add_patch(arrow)
-        # plt.show()
-        return local_graph
-
-    def combine_graph(
-        self,
-        main_graph: nx.graph,
-        local_graph: nx.graph,
-        min_length: float,
-        max_length: float,
-    ) -> nx.graph:
-
-        index_shifter = max(main_graph.nodes) + 1
-        for local_idx, local_point in local_graph.nodes(data="pos"):
-            main_graph.add_node(local_idx + index_shifter, pos=local_point)
-        for edge in local_graph.edges(data=True):
-            local_idx_1, local_idx_2, edge_data = edge
-            main_graph.add_edge(
-                local_idx_1 + index_shifter, local_idx_2 + index_shifter, **edge_data
-            )
-        points = {node: data["pos"] for node, data in main_graph.nodes(data=True)}
-        for local_idx, local_point in local_graph.nodes(data="pos"):
-            indices = self.global_kdtree.query_ball_point(local_point, max_length)
-            # print(f"For {local_point}, found neighbours: {indices}")
-            for neighbour_idx in indices:
-                # print(f"looking at neighbour {points[neighbour_idx]}")
-                dist = np.linalg.norm(
-                    np.array(local_point) - np.array(points[neighbour_idx])
-                )
-                if not min_length <= dist <= max_length:
-                    # print("Distance outside annular")
-                    # outside allowable lengths
-                    continue
-                candidate_edge = LineString([points[neighbour_idx], local_point])
-                if not candidate_edge.within(self.road_map.map):
-                    # motion path is disallowed
-                    continue
-                # TODO: decide on weights
-                main_graph.add_edge(
-                    local_idx + index_shifter, neighbour_idx, weight=dist
-                )
-        return main_graph, index_shifter
-
-    def loop_graph(
-        self,
-        poses,
-        step_size: float,
-        num_rings: int = 4,
-        multiplier: float = 1.3,
-    ):
-        self.full_graph = deepcopy(self.global_graph)
-        self.pose_indices = []
-        for pose in poses:
-            local_graph = self.generate_local_graph(
-                pose, step_size, num_rings, multiplier
-            )
-            self.full_graph, pose_idx = self.combine_graph(
-                self.full_graph, local_graph, self.min_length, self.max_length
-            )
-            self.pose_indices.append(pose_idx)
-
-        # self.road_map.visualise(True, True, self.full_graph)
-
 
 class RoadDirection(Enum):
     LONG_X = -1
@@ -711,7 +291,7 @@ class RoadTrack:
         self.vertex_to_index: Dict[Point, int] = {}
         self.edges: Dict[Tuple[Point, Point], LineString] = {}
         self.min_seg_length = 0.4
-        self.reverse_lane_penalty_mult = 10
+        self.reverse_lane_penalty_mult = 100
 
         self.generate_grid_points()
         self.full_graph = self.generate_nx_graph()
@@ -803,6 +383,9 @@ class RoadTrack:
         lane_B = vertices[idx_B][1]
         weight = line.length
 
+        if not np.allclose(np.array(line.coords[0]), np.array([pt_A.x, pt_A.y]), rtol=1e-5, atol=1e-5):
+            line = LineString(line.coords[::-1]) 
+
         # Apply penalty if moving against the lane direction
         if lane_B == "north" and pt_B.y < pt_A.y:
             weight *= reverse_lane_penalty_mult 
@@ -833,6 +416,11 @@ class RoadTrack:
             List[int]: Indices of the N nearest vertices.
         """
         _, idx = self.global_kdtree.query(point, N)
+
+        if isinstance(idx, np.int64):  # Single neighbor, scalar integer
+            idx = [idx]
+        else:  # Multiple neighbors, array
+            idx = list(idx)
         return idx
 
     def _get_bezier_control_points(self, start: Point, end: Point, direction: int) -> Tuple[Point, Point]:
@@ -864,7 +452,7 @@ class RoadTrack:
             raise ValueError("Invalid direction for Bezier control points")
         return cp1, cp2
 
-    def bezier_curve(self, start: Point, end: Point, direction: int, num_points: int = 30) -> LineString:
+    def bezier_curve(self, start: Point, end: Point, direction: int, num_points: int = 15) -> LineString:
         """
         Generates a cubic Bezier curve between two points.
 

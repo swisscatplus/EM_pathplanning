@@ -586,7 +586,7 @@ class RRT_star_Reeds_Shepp(RRT_star):
             *from_node.get_pose(),
             *candidate_node.get_pose(),
             maxc=1/self.vehicle.turning_radius,
-            step_size=0.02
+            step_size=0.01
         )
         if not px:
             return None

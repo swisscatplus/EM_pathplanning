@@ -383,7 +383,7 @@ def generate_path(q0, q1, max_curvature, step_size):
         if flag:
             for distance in travel_distances:
                 if (0.1*sum([abs(d) for d in travel_distances]) < abs(distance) < step_size):
-                    print("Step size too large for Reeds-Shepp paths.")
+                    print("Step size too large for Reeds-Shepp paths.", q0, q1)
                     return []
             paths = set_path(paths, travel_distances, steering_dirns, step_size)
 
@@ -391,7 +391,7 @@ def generate_path(q0, q1, max_curvature, step_size):
         if flag:
             for distance in travel_distances:
                 if (0.1*sum([abs(d) for d in travel_distances]) < abs(distance) < step_size):
-                    print("Step size too large for Reeds-Shepp paths.")
+                    print("Step size too large for Reeds-Shepp paths.", q0, q1)
                     return []
             travel_distances = timeflip(travel_distances)
             paths = set_path(paths, travel_distances, steering_dirns, step_size)
@@ -400,7 +400,7 @@ def generate_path(q0, q1, max_curvature, step_size):
         if flag:
             for distance in travel_distances:
                 if (0.1*sum([abs(d) for d in travel_distances]) < abs(distance) < step_size):
-                    print("Step size too large for Reeds-Shepp paths.")
+                    print("Step size too large for Reeds-Shepp paths.", q0, q1)
                     return []
             steering_dirns = reflect(steering_dirns)
             paths = set_path(paths, travel_distances, steering_dirns, step_size)
@@ -409,7 +409,7 @@ def generate_path(q0, q1, max_curvature, step_size):
         if flag:
             for distance in travel_distances:
                 if (0.1*sum([abs(d) for d in travel_distances]) < abs(distance) < step_size):
-                    print("Step size too large for Reeds-Shepp paths.")
+                    print("Step size too large for Reeds-Shepp paths.", q0, q1)
                     return []
             travel_distances = timeflip(travel_distances)
             steering_dirns = reflect(steering_dirns)
