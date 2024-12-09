@@ -43,7 +43,7 @@ class RRT:
         goal_radius: float,
         vehicle: Union[EdyMobile],
         local_map: Polygon,
-        other_vehicles: Optional[List[Union[EdyMobile]]] = [],
+        other_vehicles: Optional[Polygon] = [],
         collision_buffer: float = 0.05,
         step_size: float = 0.1,
         max_iter: int = 100,
@@ -135,7 +135,7 @@ class RRT:
         if not within(temp_vehicle._vehicle_model, self.local_map):
             return True
         for other_vehicle in self.other_vehicles:
-            if overlaps(other_vehicle._vehicle_model, temp_vehicle._vehicle_model):
+            if overlaps(other_vehicle, temp_vehicle._vehicle_model):
                 return True
         return False
 
@@ -494,7 +494,7 @@ class RRT_star_Reeds_Shepp(RRT_star):
         goal_radius: float,
         vehicle: Union[EdyMobile, Edison],
         local_map: Polygon,
-        other_vehicles: List[EdyMobile] | None = [],
+        other_vehicles: Optional[Polygon] | None = [],
         collision_buffer: float = 0.05,
         step_size: float = 0.1,
         max_iter: int = 100,
