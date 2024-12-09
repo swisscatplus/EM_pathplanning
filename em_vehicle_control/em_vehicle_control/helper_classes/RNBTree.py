@@ -69,36 +69,6 @@ class CallForHelp(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.SUCCESS
 
 
-def find_nearest_point_on_geom_path(
-    point: Point, path: List[LineString]
-) -> Tuple[Point, int]:
-    """
-    Find the nearest point on a geometric path (list of linestrings), to a given point
-
-    Args:
-        point(Point): Given point
-        path(List[LineString]): Geometric path
-    Returns:
-        Tuple[Point, int]:
-            - nearest_point(Point): Coordinates of the closest point lying on the path
-            - index(int): index of LineString segment the nearest_point lies on
-    """
-    closest_point = None
-    closest_segment_index = -1
-    min_distance = float("inf")
-
-    for index, segment in enumerate(path):
-        projected_distance = segment.project(point)
-        candidate_point = segment.interpolate(projected_distance)
-        distance = point.distance(candidate_point)
-        if distance < min_distance:
-            min_distance = distance
-            closest_point = candidate_point
-            closest_segment_index = index
-
-    return closest_point, closest_segment_index
-
-
 class GetAllCurrentPosesAndGoals(py_trees.behaviour.Behaviour):
     def __init__(self, name="Get All Current Poses and Goals"):
         super().__init__(name)
@@ -117,7 +87,7 @@ class GetAllCurrentPosesAndGoals(py_trees.behaviour.Behaviour):
 
     def update(self) -> Status:
         # TODO: replace with ROS2 service
-        robot_data = sim_get_poses_and_goals(2)
+        robot_data = Handle(2)
         for robot_name, _, _ in robot_data:
             assert robot_name in blackboard.get("robot_names")
         robot_poses_goals = {
@@ -148,21 +118,8 @@ class HandleStaticObstacles(py_trees.behaviour.Behaviour):
         super().__init__("Handle Static Obstacles")
         self.robot_poses_goals = None
         self.robot_types = None
-
-    def register_static_obstacle(self, robot_polygon: Polygon) -> None:
-        """
-        Registers the robot as a static obstacle in the blackboard.
-
-        Args:
-            robot_polygon(Polygon): shape of robot to register
-        """
-
-        if not blackboard.exists("static_obstacles"):
-            blackboard.set("static_obstacles", [])
-        static_obstacles = blackboard.get("static_obstacles")
-
-        static_obstacles.append(robot_polygon)
-        blackboard.set("static_obstacles", static_obstacles)
+        self.static_obstacles:List[Polygon] = []
+        self.blocked_nodes: List[int] = []
 
     def block_graph_nodes(self, robot_polygon: Polygon) -> None:
         """
@@ -172,13 +129,8 @@ class HandleStaticObstacles(py_trees.behaviour.Behaviour):
         Args:
             robot_polygon(Polygon): shape of robot to register
         """
-        graph_network = blackboard.get("graph_network")
-        blocked_nodes = graph_network.block_nodes_within_obstacle(robot_polygon)
-        if not blackboard.exists("blocked_nodes"):
-            blackboard.set("blocked_nodes", [])
-        all_blocked_nodes = blackboard.get("blocked_nodes")
-        all_blocked_nodes += blocked_nodes
-        blackboard.set("blocked_nodes", all_blocked_nodes)
+        graph_network:RoadTrack = blackboard.get("graph_network")
+        self.blocked_nodes += graph_network.block_nodes_within_obstacle(robot_polygon)
 
     def update(self) -> Status:
         robot_fsms = blackboard.get("robot_FSMs")
@@ -190,8 +142,10 @@ class HandleStaticObstacles(py_trees.behaviour.Behaviour):
                 robot_type = robot_types[robot_name]
                 robot_type.construct_vehicle(robot_pose)
                 robot_polygon = robot_type.vehicle_model.buffer(DANGER_AREA_BUFFER)
-                self.register_static_obstacle(robot_polygon)
+                self.static_obstacles.append(robot_polygon)
                 self.block_graph_nodes(robot_polygon)
+        blackboard.set("static_obstacles", self.static_obstacles)
+        blackboard.set("blocked_nodes", self.blocked_nodes)
         return py_trees.common.Status.SUCCESS
 
 
@@ -684,6 +638,35 @@ class ComputeDangerAreaForRobot(py_trees.behaviour.Behaviour):
                 break
 
         return LineString(upcoming_coords)
+    
+    def find_nearest_point_on_geom_path(
+        self, point: Point, path: List[LineString]
+    ) -> Tuple[Point, int]:
+        """
+        Find the nearest point on a geometric path (list of linestrings), to a given point
+
+        Args:
+            point(Point): Given point
+            path(List[LineString]): Geometric path
+        Returns:
+            Tuple[Point, int]:
+                - nearest_point(Point): Coordinates of the closest point lying on the path
+                - index(int): index of LineString segment the nearest_point lies on
+        """
+        closest_point = None
+        closest_segment_index = -1
+        min_distance = float("inf")
+
+        for index, segment in enumerate(path):
+            projected_distance = segment.project(point)
+            candidate_point = segment.interpolate(projected_distance)
+            distance = point.distance(candidate_point)
+            if distance < min_distance:
+                min_distance = distance
+                closest_point = candidate_point
+                closest_segment_index = index
+
+        return closest_point, closest_segment_index
 
     def update(self) -> py_trees.common.Status:
         robot_pose = blackboard.get("robot_poses_goals")[self.robot_name]["pose"]
@@ -695,12 +678,9 @@ class ComputeDangerAreaForRobot(py_trees.behaviour.Behaviour):
             return py_trees.common.Status.FAILURE
 
         danger_area = None
-        if robot_fsm.state == "error" or robot_fsm.state == "waiting":
-            danger_area = robot_footprint.buffer(DANGER_AREA_BUFFER)
-        elif robot_fsm.state == "idle":
+        if robot_fsm.state in ("idle", "waiting", "error"):
             danger_area = robot_footprint.buffer(DANGER_AREA_BUFFER)
         elif robot_fsm.state == "move_by_sampling":
-            # TODO confirm if RRT* path is saved as such
             path = copy.deepcopy(
                 blackboard.get("robot_paths")[self.robot_name]["pose_path"]
             )
@@ -721,7 +701,7 @@ class ComputeDangerAreaForRobot(py_trees.behaviour.Behaviour):
                 "Compute danger area error, no path planned while in state move_graph"
                 return py_trees.common.Status.FAILURE
             current_pose = Point(robot_pose[0], robot_pose[1])
-            nearest_point, closest_seg_idx = find_nearest_point_on_geom_path(
+            nearest_point, closest_seg_idx = self.find_nearest_point_on_geom_path(
                 current_pose, path
             )
             lookahead_dist = (
