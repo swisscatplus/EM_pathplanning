@@ -78,7 +78,6 @@ class Tracker(Node):
     def path_subscription(self, msg):
         with self.path_msg_lock:
             self.path = msg.poses
-            self.get_logger().info("New path")
             self.tracker.initialise_new_path()
 
     def pub_twist(self, v: float, omega: float) -> None:
@@ -126,7 +125,9 @@ class Tracker(Node):
         Control loop that manages and runs the MPC tracker,
         and publishes velocity commands
         """
-        if self.path is None:
+        if self.path is None or self.path == []:
+            # print("Robot has no path. Stopping", flush=True)
+            self.pub_twist(0.0,0.0)
             return
         robot_pose = self.get_robot_pose()
         if robot_pose is None:

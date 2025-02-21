@@ -3,8 +3,9 @@ import cvxpy as cp
 from shapely import Point, LineString
 from typing import Tuple, List, Optional
 from copy import deepcopy
+from statistics import mode
 
-from .path_planner import PathPointDatum
+# from .path_planner import PathPointDatum
 from .segment import *
 
 PosePt2D = Tuple[float, float, float]  # (x, y, yaw) values
@@ -17,11 +18,11 @@ class MPCTracker:
 
     def __init__(self, plot_rviz: bool = False) -> None:
         # time parameters:
-        self.N = 8
+        self.N = 5
         self.dt = 0.125  # follows tracker node rate
 
         # state limits
-        self.v_max = 0.1  # m/s
+        self.v_max = 0.15  # m/s
         self.omega_max = 1  # rad/s
         self.delta_v_max = 0.1  # rate of change limit for linear speed
         self.delta_omega_max = 0.3  # rate of change limit for angular speed
@@ -37,6 +38,7 @@ class MPCTracker:
         self.r_omega_smooth = 0.1  # smoothing angular velocity command
         self.q_p_terminal = 10.0  # terminal error cost
         self.q_theta_terminal = 10.0  # terminal error cost
+        self.t_p = 0 # transitioning position cost reduction
 
         # other parameters
         self.nominal_speed = self.v_max
@@ -54,6 +56,10 @@ class MPCTracker:
         self.theta_prev = None
         self.v_prev = None
         self.omega_prev = None
+
+        # declare other variables
+        self.transitioning = False
+        self.final_theta = None
 
         # write
         self.write = False
@@ -74,6 +80,27 @@ class MPCTracker:
         self.path_length = 0
         for seg in path:
             self.path_length += seg.length
+
+    def compute_final_theta(self, path: List[Segment]) -> None:
+        """
+        Computes final theta for when path is too short to compute the angle.
+
+        Args:
+            path(List[Segment]): List of desired positions, with direction of motion
+        """
+        dy = path[-1].end.y - path[-1].start.y
+        dx = path[-1].end.x - path[-1].start.x
+        self.final_theta = np.arctan2(dy, dx)
+        if path[-1].direction == -1:
+            # Correctly adjust by adding π radians
+            self.final_theta += np.pi
+        
+        # Normalize the angle to [-π, π]
+        self.final_theta = (self.final_theta + np.pi) % (2 * np.pi) - np.pi
+        
+        theta_a = (np.arctan2(dy, dx) + 2*np.pi) % (2*np.pi) - np.pi
+        theta_b = np.arctan2(dy, dx) + np.pi
+        theta_b = (theta_b + np.pi) % (2 * np.pi) - np.pi
 
     def find_segment_and_progress(
         self, path: List[Segment], path_travelled: float
@@ -165,10 +192,8 @@ class MPCTracker:
         # Initial pass to find the nearest segment in `remaining_path`
         for idx, seg in enumerate(remaining_path):
             # Project and normalize
-            projected_dist = seg.line.project(robot_position, normalized=True)
-            # TODO remove clamp Clamp between 0 and 1 to ensure it's within bounds
-            # projected_dist = max(0.0, min(1.0, projected_dist))
-            nearest_pt_tmp = seg.line.interpolate(projected_dist, normalized=True)
+            projected_dist = seg.line.project(robot_position)
+            nearest_pt_tmp = seg.line.interpolate(projected_dist)
             distance = robot_position.distance(nearest_pt_tmp)
             
             if distance < min_distance:
@@ -223,7 +248,6 @@ class MPCTracker:
             remaining_path = [adjusted_starting_segment]
         return self.find_closest_point_on_remaining_path(current_pose, remaining_path, path, segment_idx)
 
-
     def update_progress_variable(
         self,
         path: List[Segment],
@@ -245,9 +269,9 @@ class MPCTracker:
         for seg in path[0:nearest_seg_idx]:
             length_travelled += seg.length
         length_travelled += path[nearest_seg_idx].length * percent_of_nearest_segment
-
+        # print(self.s, flush=True)
         new_s = length_travelled / self.path_length
-        if self.s is not None and new_s - self.s < -0.01:
+        if self.s is not None and new_s - self.s < -0.0001:
             print(f"WARNING: s decreasing from {self.s} to {new_s}", flush=True)
         return new_s
 
@@ -312,7 +336,7 @@ class MPCTracker:
         theta[0] = current_yaw
         for i in range(1, len(theta)):
             if dx[i - 1] == 0 and dy[i - 1] == 0:
-                desired_theta = theta[i - 1]
+                desired_theta = self.final_theta if self.final_theta is not None else theta[i - 1]
             elif direction[i - 1] != direction[i]:
                 desired_theta = theta[i - 1]
             elif direction[i - 1] == 1:
@@ -387,6 +411,8 @@ class MPCTracker:
         """
         if self.path_length is None:
             self.compute_path_length(path)
+        if self.final_theta is None:
+            self.compute_final_theta(path)
         remaining_spatial_path = self.get_remaining_path(current_pose, path)
         x_ref = np.zeros(self.N + 1)
         y_ref = np.zeros(self.N + 1)
@@ -419,6 +445,7 @@ class MPCTracker:
         """
         self.s = None
         self.path_length = None
+        self.final_theta = None
 
     def check_goal(self, current_pose: Pose2D, path: List[Segment]) -> bool:
         goal = path[-1].end
@@ -429,7 +456,7 @@ class MPCTracker:
         dx = goal.x - tmp_pt.x
         dy = goal.y - tmp_pt.y
         goal_angle = np.arctan2(dy, dx)
-        angle_diff = (current_pose[2] - goal_angle + np.pi) % (2 * np.pi) - np.pi
+        angle_diff = np.absolute((current_pose[2] - goal_angle + np.pi) % (2 * np.pi) - np.pi)
         if (goal_distance_sq < self.goal_radius**2) and (angle_diff < self.goal_angle_tol) and self.s > 0.5:
             return True
         return False
@@ -444,16 +471,18 @@ class MPCTracker:
         Returns:
             Tuple[float, float]: command linear and angular velocity
         """
-        # print("Tracker looping", self.s,  flush=True)
-        # TODO: Reset if get new path
         if self.s is not None and self.check_goal(current_pose, path):
+            # print("MPC goal reached!", flush=True)
             if self.plot_rviz:
                 return 0.0, 0.0, [], [], []
             else:
                 return 0.0, 0.0
+        # path = self.remove_zero_length_segments(path)
         x_ref, y_ref, theta_ref, direction_ref = self.get_reference_path(
             current_pose, path
         )
+        # self.transitioning = direction_ref[0] != direction_ref[1]  # Check for transition
+        # print(path[0:4], flush=True)
         # print("x ", x_ref, flush=True)
         # print("y ", y_ref, flush=True)
         # print("oe ", theta_ref, flush=True)
@@ -492,9 +521,19 @@ class MPCTracker:
 
         for k in range(self.N + 1):
             position_error += (
-                self.d_p**k * self.q_p * (x[k] - x_ref[k]) ** 2
-                + self.d_p**k * self.q_p * (y[k] - y_ref[k]) ** 2
-            )
+                    self.d_p**k * self.q_p * (x[k] - x_ref[k]) ** 2
+                    + self.d_p**k * self.q_p * (y[k] - y_ref[k]) ** 2
+                )
+            # if not self.transitioning or (self.transitioning and direction_ref[k] == direction_ref[-1]):
+            #     position_error += (
+            #         self.d_p**k * self.q_p * (x[k] - x_ref[k]) ** 2
+            #         + self.d_p**k * self.q_p * (y[k] - y_ref[k]) ** 2
+            #     )
+            # else:
+            #     position_error += (
+            #         self.t_p * self.d_p**k * self.q_p * (x[k] - x_ref[k]) ** 2
+            #         + self.t_p * self.d_p**k * self.q_p * (y[k] - y_ref[k]) ** 2
+            #     )
 
             orientation_error += (
                 self.d_theta**k * self.q_theta * (theta[k] - theta_ref[k]) ** 2
@@ -545,11 +584,25 @@ class MPCTracker:
 
         # direction constraints
         direction_constraints = []
+        # if direction_ref[k] == 1:  # forward
+        #     if self.transitioning:  # Relaxed constraint
+        #         direction_constraints += [v[k] >= -0.5 * self.v_max]
+        #     else:
+        #         direction_constraints += [v[k] >= -0.1*self.v_max]
+        # elif direction_ref[k] == -1:  # backward
+        #     if self.transitioning:  # Relaxed constraint
+        #         direction_constraints += [v[k] <= 0.5 * self.v_max]
+        #     else:
+        #         direction_constraints += [v[k] <= 0.1*self.v_max]
+        # elif direction_ref[k] == 0:  # stop
+        #     direction_constraints += [cp.abs(v[k]) <= self.v_max * 0.1]
+
+
         for k in range(self.N):
             if direction_ref[k] == 1:  # forward
-                direction_constraints += [v[k] >= 0]
+                direction_constraints += [v[k] >= -0.1*self.v_max]
             elif direction_ref[k] == -1:  # backward
-                direction_constraints += [v[k] <= 0]
+                direction_constraints += [v[k] <= 0.1*self.v_max]
             elif direction_ref[k] == 0:  # stop
                 direction_constraints += [cp.abs(v[k]) <= self.v_max * 0.1]
 
@@ -586,12 +639,19 @@ class MPCTracker:
 
         v_command = v.value[0]
         omega_command = omega.value[0]
-        # print("speeds: ", v_command, omega_command, flush=True)
+
         # self.x_prev = self.warm_start_shift(x.value)
         # self.y_prev = self.warm_start_shift(y.value)
         # self.theta_prev = self.warm_start_shift(theta.value)
         # self.v_prev = self.warm_start_shift(v.value)
         # self.omega_prev = self.warm_start_shift(omega.value)
+
+        # print("Velocity: ",v.value, flush=True)
+
+        if np.abs(v_command) < 0.001 * self.v_max:
+            # add a kick
+            v_command = direction_ref[0] * 0.9 * self.v_max
+            omega_command = (np.random.random() - 0.5) * 2
 
         if self.write:
             with open("src/mpc_data.txt", "a") as file:

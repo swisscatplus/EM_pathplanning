@@ -24,14 +24,21 @@ class RobotFSM:
             before="startup_transition",
         )
         self.machine.add_transition(
-            trigger="wait", source=["move_by_sampling", "move_by_graph"], dest="waiting"
+            trigger="wait",
+            source=["waiting", "move_by_sampling", "move_by_graph"],
+            dest="waiting",
         )
         self.machine.add_transition(
-            trigger="resume_sampling", source="waiting", dest="move_by_sampling"
+            trigger="resume_sampling",
+            source=["waiting", "move_by_sampling", "move_by_graph"],
+            dest="move_by_sampling",
         )
         self.machine.add_transition(
-            trigger="resume_graph", source="waiting", dest="move_by_graph"
+            trigger="resume_graph",
+            source=["waiting", "move_by_sampling", "move_by_graph"],
+            dest="move_by_graph",
         )
+        self.machine.add_transition(trigger="to_idle", source="*", dest="idle")
 
         self.machine.on_enter_error(self.on_enter_error)
 

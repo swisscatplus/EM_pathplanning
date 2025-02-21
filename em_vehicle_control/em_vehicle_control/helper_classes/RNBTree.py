@@ -11,6 +11,8 @@ from py_trees.common import Status
 from shapely.geometry import Point, Polygon, LineString
 from shapely.ops import substring
 import networkx as nx
+import logging
+from datetime import datetime
 
 from em_vehicle_control.helper_classes.robot_fsm import RobotFSM
 from em_vehicle_control.helper_classes.vehicles import *
@@ -26,19 +28,21 @@ PosePathPoint = Tuple[float, float, int]  # x, y, direction
 """
 All constants, units attached
 """
-TICK_RATE = 8  # Hz
+TICK_RATE = 0.5  # Hz
 DANGER_AREA_BUFFER = 0.01  # m
-DANGER_AREA_SWEEP_LOOKAHEAD = 2  # times of tick period
+DANGER_AREA_SWEEP_LOOKAHEAD = 1.1  # times of tick period
 """
 Danger area sweep distance is given by 
 DANGER_AREA_SWEEP_LOOKAHEAD / TICK_RATE * nominal speed of the robot
 """
-RRT_GOAL_RADIUS = 0.01  # m
-NEAR_TO_PATH_RADIUS = 0.05  # m
-NEAR_TO_PATH_ANGLE = 0.8  # rad, high just to ensure direction is correct
-NEAR_TO_PATH_END_RADIUS = 0.05
-NEAR_TO_PATH_END_ANGLE = 0.1  # rad
-NEAR_TO_GOAL_USE_SAMPLING = 0.2  # m
+NEAR_TO_GOAL_RADIUS = 0.05
+NEAR_TO_GOAL_ANGLE = 0.26 # rad or 15 deg
+RRT_GOAL_RADIUS = 0.05  # m
+NEAR_TO_PATH_RADIUS = 0.08  # m
+NEAR_TO_PATH_ANGLE = 0.8  # rad or 45 deg, high just to ensure direction is correct
+NEAR_TO_PATH_END_RADIUS = 0.08
+NEAR_TO_PATH_END_ANGLE = 0.8  # rad
+NEAR_TO_GOAL_USE_SAMPLING = 0.4  # m
 REEDS_SHEPP_STEP_LARGE = 0.1  # m
 REEDS_SHEPP_STEP_SMALL = 0.01  # m
 
@@ -60,18 +64,75 @@ Blackboard items:
 """
 
 
+# Configure loggers
+# logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("BehaviorTree")
+
+class LoggingBehavior(py_trees.behaviour.Behaviour):
+    def update(self):
+        status = super().update()
+        logger.info(f"Node '{self.name}' Status: {status}")
+        if status == py_trees.common.Status.FAILURE:
+            self.tree.failure_registry.append({
+                "node_name": self.name,
+                "timestamp": datetime.now(),
+                "parent": self.parent.name if self.parent else None,
+            })
+        return status
+
+
+class LoggingDecorator(py_trees.decorators.Decorator):
+    def __init__(self, child, name):
+        super().__init__(name=name, child=child)
+        self.logger = logging.getLogger(name)
+
+    def update(self):
+        status = self.decorated.status
+        self.logger.info(f"{self.name} status: {status}")
+        return status
+    
+
+class LoggingLeaf(py_trees.behaviour.Behaviour):
+    def update(self):
+        status = super().update()
+        logging.info(f"Node '{self.name}' status: {status}")
+        if status == py_trees.common.Status.FAILURE:
+            logging.error(f"Node '{self.name}' failed at {datetime.now()}")
+        return status
+
+
+class LoggingSelector(py_trees.composites.Selector):
+    def update(self):
+        for child in self.children:
+            if child.status == py_trees.common.Status.FAILURE:
+                logging.error(f"Child '{child.name}' failed.")
+        return super().update()
+
+
 class CallForHelp(py_trees.behaviour.Behaviour):
     def __init__(self, name="Call for Help, Fix Error"):
         super().__init__(name)
 
     def update(self):
-        print("Action: Calling for help, fixing error...")
+        print("Action: Calling for help, fixing error...",flush=True)
         return py_trees.common.Status.SUCCESS
 
 
 class GetAllCurrentPosesAndGoals(py_trees.behaviour.Behaviour):
     def __init__(self, name="Get All Current Poses and Goals"):
         super().__init__(name)
+
+    def at_goal(self, current_pose: PosePt2D, goal: PosePt2D) -> bool:
+        """
+        Returns:
+            -bool: true if near goal
+        """
+        goal_distance_sq = (current_pose[0] - goal[0]) ** 2 + (current_pose[1] - goal[1]) ** 2
+        angle_diff = np.absolute((current_pose[2] - goal[2] + np.pi) % (2 * np.pi) - np.pi)
+        if (goal_distance_sq < NEAR_TO_GOAL_RADIUS**2) and (angle_diff < NEAR_TO_GOAL_ANGLE) :
+            print("REACHED!", flush=True)
+            return True
+        return False
 
     def update_idle_states(self) -> None:
         """
@@ -83,21 +144,12 @@ class GetAllCurrentPosesAndGoals(py_trees.behaviour.Behaviour):
             goal = data.get("goal")
             if goal != None and robot_fsms[robot_name].state == "idle":
                 robot_fsms[robot_name].startup()
+            if goal != None and self.at_goal(data.get("pose"), goal):
+                robot_fsms[robot_name].to_idle()
         blackboard.set("robot_FSMs", robot_fsms)
 
     def update(self) -> Status:
-        # TODO: replace with ROS2 service
-        robot_data = Handle(2)
-        for robot_name, _, _ in robot_data:
-            assert robot_name in blackboard.get("robot_names")
-        robot_poses_goals = {
-            robot_name: {"pose": pose, "goal": goal}
-            for robot_name, pose, goal in robot_data
-        }
-        blackboard.set("robot_poses_goals", robot_poses_goals)
-
         self.update_idle_states()
-
         return py_trees.common.Status.SUCCESS
 
 
@@ -159,7 +211,6 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
         self.robot_name: str = robot_name
         self.robot_type: AllVehicles = None
         self.robot_fsm: RobotFSM = None
-        self.robot_state: str = None
         self.robot_pose: PosePt2D = None
         self.robot_goal: PosePt2D = None
         self.pose_path: List[PosePathPoint] = None
@@ -205,9 +256,7 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
         self.geometry_path = self.convert_nodes_to_geometry_path(
             self.graph_network, self.node_path
         )
-        self.pose_path = self.convert_to_nodes_to_pose_path(
-            self.graph_network, self.node_path, self.geometry_path
-        )
+        self.pose_path = self.convert_to_nodes_to_pose_path(self.geometry_path)
         self.set_path()
 
     def convert_nodes_to_geometry_path(
@@ -221,55 +270,42 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
 
     def convert_to_nodes_to_pose_path(
         self,
-        graph_network: RoadTrack,
-        node_path: List[int],
         geometry_path: List[LineString],
     ) -> List[PosePathPoint]:
         """
         Convert a sequence of nodes and their associated geometries into a pose path.
 
         Args:
-            graph_network (RoadTrack): The road network object with lane information.
-            node_path (List[int]): Sequence of node indices representing the path.
             geometry_path (List[LineString]): Geometric path (LineStrings between nodes).
 
         Returns:
             List[Tuple[float, float, int]]: Pose path represented as (x, y, gear).
         """
         pose_path = []
-        direction_of_first_node = graph_network.dynamic_graph.nodes[node_path[0]][
-            "lane"
-        ]
-        theta = self.robot_pose[2]
-        if direction_of_first_node == "north":
-            current_gear = 1 if 0 <= theta <= np.pi else -1
-        elif direction_of_first_node == "south":
-            current_gear = -1 if 0 <= theta <= np.pi else 1
-        elif direction_of_first_node == "east":
-            current_gear = 1 if -np.pi / 2 <= theta <= np.pi / 2 else -1
-        elif direction_of_first_node == "west":
-            current_gear = -1 if -np.pi / 2 <= theta <= np.pi / 2 else 1
-
-        for u, v, geometry in zip(node_path, node_path[1:], geometry_path):
-            lane_u = graph_network.dynamic_graph.nodes[u]["lane"]
-            lane_v = graph_network.dynamic_graph.nodes[v]["lane"]
-
-            # Gear changes only occur when transitioning between opposite lane directions
-            # (e.g., north and south, east and west). Other transitions are disallowed by graph penalties.
-            gear_change = (
-                (lane_u == "north" and lane_v == "south")
-                or (lane_u == "south" and lane_v == "north")
-                or (lane_u == "east" and lane_v == "west")
-                or (lane_u == "west" and lane_v == "east")
-            )
-
-            if gear_change:
-                current_gear *= -1
-
-            for x, y in geometry.coords:
-                pose_path.append((x, y, current_gear))
+        NUM_SEGMENT_DIRECTION_LOOKAHEAD = 5
+        gear = 1
+        for seg_idx, segment in enumerate(geometry_path):
+            if seg_idx < NUM_SEGMENT_DIRECTION_LOOKAHEAD:
+                gear = self.determine_gear_from_geometry_path(segment)
+            for x, y in segment.coords:
+                pose_path.append((x, y, gear))
 
         return pose_path
+
+    def determine_gear_from_geometry_path(self, segment) -> int:
+        """
+        Determine if the robot is moving forward or backward based on the first geometry segment.
+
+        Returns:
+            int: 1 if forward gear, -1 if reverse gear.
+        """
+        start_point = segment.coords[0]
+        end_point = segment.coords[-1]
+        segment_vector = np.array([end_point[0] - start_point[0], end_point[1] - start_point[1]])
+        segment_vector /= np.linalg.norm(segment_vector)
+        robot_direction = np.array([np.cos(self.robot_pose[2]), np.sin(self.robot_pose[2])])
+        dot_product = np.dot(segment_vector, robot_direction)
+        return 1 if dot_product > 0 else -1
 
     def plan_rrt_star(self, source: PosePt2D, goal: PosePt2D) -> None:
         """
@@ -338,7 +374,7 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
                     point_AB[0][1] - point_AB[1][1], point_AB[0][0] - point_AB[1][0]
                 )
                 if point_AB[0][2] == -1:  # reverse gear needed
-                    des_angle = (des_angle + 2 * np.pi) % 2 * np.pi - np.pi
+                    target_angle = (target_angle + 2 * np.pi) % 2 * np.pi - np.pi
             if (
                 (target_angle - robot_pose[2] + np.pi) % 2 * np.pi - np.pi
             ) > near_to_angle:
@@ -462,7 +498,8 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
 
     def near_to_previous_pose_path(self) -> bool:
         """
-        Checks if near to previous pose path
+        Checks if near to previous pose path.
+        Note: Can only be used on Reeds Shepp paths. RoadTrack poses are too sparse.
 
         Returns:
             bool: true if near to previous path
@@ -474,6 +511,18 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
             if dist_squared < NEAR_TO_PATH_RADIUS ** 2:
                 return True
         return False
+
+    def trim_path(self, nearest_seg_idx: int) -> None:
+        """
+        Trims node, geometry and pose paths so that the robot is on the first segment
+
+        Args:
+            nearest_seg_idx: index with the nearest segment
+        """
+        self.geometry_path = self.geometry_path[nearest_seg_idx:]
+        self.node_path = self.node_path[nearest_seg_idx:]
+        self.pose_path = self.convert_to_nodes_to_pose_path(self.geometry_path)
+        self.set_path()
     
     def near_to_previous_geometry_path(self) -> bool:
         """
@@ -488,6 +537,7 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
             candidate_point = segment.interpolate(projected_distance)
             distance = point.distance(candidate_point)
             if distance < NEAR_TO_PATH_RADIUS:
+                self.trim_path(index)
                 return True
         return False
 
@@ -498,10 +548,62 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
         Returns:
             bool: true if near to previous path
         """
-        if self.robot_state == "move_by_sampling":
+        if self.geometry_path is not None:
+            return self.near_to_previous_geometry_path()
+        elif self.pose_path is not None:
             return self.near_to_previous_pose_path()
         else:
-            return self.near_to_previous_geometry_path()
+            return False
+        # if self.robot_state == "move_by_sampling":
+        #     return self.near_to_previous_pose_path()
+        # else:
+        #     return self.near_to_previous_geometry_path()
+
+    def resume_motion(self) -> None:
+        """
+        Resumes motion if robot was waiting and has a geometry or pose graph
+        Note: Does not work because dynamic graph has changed
+        """
+        if self.geometry_path is not None:
+            if self.near_to_previous_geometry_path():
+                self.robot_fsm.resume_graph()
+                return
+            else:
+                self.get_new_path()
+                return
+        elif self.pose_path is not None:
+            if self.near_to_previous_pose_path():
+                self.robot_fsm.resume_sampling()
+                return
+            else:
+                self.get_new_path()
+                return
+        self.get_new_path()
+        return
+    
+    def determine_path(self) -> bool:
+        if (
+            self.robot_fsm.state == "move_by_sampling"
+            or self.robot_fsm.state == "move_by_graph"
+        ):
+            if self.pose_path is None or self.path_nearly_finished():
+                # print("Determine path", self.robot_name, "path nearly finished, get new path", flush=True)
+                self.get_new_path()
+                return True
+            elif self.near_to_previous_path():
+                # continue on previous path
+                # print("Determine path", self.robot_name, "continuing on previous path", flush=True)
+                return True
+            else:
+                # print("Determine path", self.robot_name, "bad previous path, getting new path", flush=True)
+                self.get_new_path()
+                return True
+        elif self.robot_fsm.state == "waiting":
+            # print("Determine path", self.robot_name, "back from waiting, get new path", flush=True)
+            self.get_new_path()
+            return True
+        # unknown state of system, returns failure
+        return False
 
     def update(self) -> Status:
         robot_poses_goals = blackboard.get("robot_poses_goals")
@@ -511,7 +613,8 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
         self.robot_goal = robot_pose_goal["goal"]
         robot_fsms = blackboard.get("robot_FSMs")
         self.robot_fsm = robot_fsms[self.robot_name]
-        self.robot_state = self.robot_fsm.state
+        if self.robot_fsm.state == "idle":
+            return py_trees.common.Status.SUCCESS
         if not blackboard.exists("robot_paths"):
             robot_paths = {}
             blackboard.set("robot_paths", robot_paths)
@@ -523,23 +626,10 @@ class PlanPathForRobot(py_trees.behaviour.Behaviour):
         self.geometry_path = robot_paths.get("geometry_path")
         self.node_path = robot_paths.get("node_path")
         self.graph_network = blackboard.get("graph_network")
-        if (
-            self.robot_state == "move_by_sampling"
-            or self.robot_state == "move_by_graph"
-        ):
-            if self.path_nearly_finished():
-                self.get_new_path()
-                return py_trees.common.Status.SUCCESS
-            elif self.near_to_previous_path():
-                # continue on previous path
-                return py_trees.common.Status.SUCCESS
-            else:
-                self.get_new_path()
-                return py_trees.common.Status.SUCCESS
-        elif self.robot_state == "waiting":
-            self.get_new_path()
+
+        if self.determine_path():
             return py_trees.common.Status.SUCCESS
-        # unknown state of system, returns failure
+        
         return py_trees.common.Status.FAILURE
 
 
@@ -554,8 +644,6 @@ def create_plan_paths_tree(robot_names: List[str]) -> py_trees.composites.Sequen
         py_trees.composites.Sequence: The full Plan Paths tree.
     """
     root = py_trees.composites.Sequence("Plan Paths Subtree", memory=False)
-    # TODO
-    # Add a behavior for handling all idle, waiting, and error robots
     handle_static_obstacles = HandleStaticObstacles()
     root.add_child(handle_static_obstacles)
 
@@ -627,7 +715,7 @@ class ComputeDangerAreaForRobot(py_trees.behaviour.Behaviour):
             upcoming_coords.extend(segment_part.coords)
             remaining_distance -= segment_part.length
 
-            if remaining_distance <= 0:
+            if remaining_distance <= 10e-5:
                 # Clip the final segment to fit the exact remaining distance
                 excess_length = abs(remaining_distance)
                 final_segment = substring(
@@ -636,7 +724,7 @@ class ComputeDangerAreaForRobot(py_trees.behaviour.Behaviour):
                 upcoming_coords = upcoming_coords[: -(len(segment_part.coords))]
                 upcoming_coords.extend(final_segment.coords)
                 break
-
+        
         return LineString(upcoming_coords)
     
     def find_nearest_point_on_geom_path(
@@ -673,9 +761,6 @@ class ComputeDangerAreaForRobot(py_trees.behaviour.Behaviour):
         self.robot_type.construct_vehicle(robot_pose)
         robot_footprint = self.robot_type.vehicle_model
         robot_fsm = blackboard.get("robot_FSMs")[self.robot_name]
-        if not robot_fsm:
-            print(f"FSM for robot {self.robot_id} not found on blackboard.")
-            return py_trees.common.Status.FAILURE
 
         danger_area = None
         if robot_fsm.state in ("idle", "waiting", "error"):
@@ -685,7 +770,7 @@ class ComputeDangerAreaForRobot(py_trees.behaviour.Behaviour):
                 blackboard.get("robot_paths")[self.robot_name]["pose_path"]
             )
             if not path:
-                "Compute danger area error, no path planned while in state move_sampling"
+                print("Compute danger area error, no path planned while in state move_sampling", flush=True)
                 return py_trees.common.Status.FAILURE
             path = [(x, y) for x, y, _ in path]
             bounds = robot_footprint.bounds
@@ -698,7 +783,7 @@ class ComputeDangerAreaForRobot(py_trees.behaviour.Behaviour):
                 blackboard.get("robot_paths")[self.robot_name]["geometry_path"]
             )
             if not path:
-                "Compute danger area error, no path planned while in state move_graph"
+                print("Compute danger area error, no path planned while in state move_graph", flush=True)
                 return py_trees.common.Status.FAILURE
             current_pose = Point(robot_pose[0], robot_pose[1])
             nearest_point, closest_seg_idx = self.find_nearest_point_on_geom_path(
@@ -745,7 +830,7 @@ class DetermineRobotsPriority(py_trees.behaviour.Behaviour):
         self.robot_paths: Dict[str, Dict] = None
         self.graph_network: RoadTrack = None
 
-        self.priority_list = []
+        self.intersections_reserved: Dict[Polygon:str] = None
 
     def goal_not_blocked(self, robot_A: str, robot_B: str) -> bool:
         """
@@ -766,6 +851,16 @@ class DetermineRobotsPriority(py_trees.behaviour.Behaviour):
         robot_A_obstacle = robot_A_footprint.buffer(DANGER_AREA_BUFFER)
 
         return not robot_A_obstacle.contains(goal)
+    
+    def get_final_pose(self, last_pose_pt:PosePathPoint, second_last_pose_pt: PosePathPoint)->PosePt2D:
+        """
+        Returns the final pose with angle, robot is moving from second last to last point.
+        """
+        angle = np.arctan2(last_pose_pt[1]-second_last_pose_pt[1], last_pose_pt[0]-second_last_pose_pt[0])
+        if last_pose_pt[2] == -1:
+            angle += np.pi
+            angle = (angle + np.pi) % 2*np.pi - np.pi
+        return (last_pose_pt[0], last_pose_pt[1], angle)
 
     def replan_sampling(self, robot_A: str, robot_B: str) -> None:
         """
@@ -783,17 +878,15 @@ class DetermineRobotsPriority(py_trees.behaviour.Behaviour):
         robot_A_footprint = self.robot_types[robot_A].vehicle_model
         robot_A_obstacle = robot_A_footprint.buffer(DANGER_AREA_BUFFER)
         robot_B_old_pose_path = self.robot_paths[robot_B]["pose_path"]
-        robot_B_last_pose = robot_B_old_pose_path[-1]
-        source = Point(robot_B_pose[0], robot_B_pose[1])
-        goal = Point(robot_B_last_pose[0], robot_B_last_pose[1])
-        local_map = self.graph_network.road_map.get_local_map([source, goal])
+        goal = self.get_final_pose(robot_B_old_pose_path[-1], robot_B_old_pose_path[-2])
+        local_map = self.graph_network.road_map.get_local_map([(robot_B_pose[0],robot_B_pose[1]), (goal[0], goal[1])])
         pose_path = RRT_star_Reeds_Shepp.create_and_plan(
-            source,
+            robot_B_pose,
             goal,
             RRT_GOAL_RADIUS,
-            self.robot_type,
+            self.robot_types[robot_B],
             local_map,
-            self.static_obstacles + robot_A_obstacle,
+            self.static_obstacles + [robot_A_obstacle],
         )
         robot_B_paths = {
             "pose_path": pose_path,
@@ -816,13 +909,16 @@ class DetermineRobotsPriority(py_trees.behaviour.Behaviour):
         robot_A_node_path = self.robot_paths[robot_A]["node_path"]
         robot_B_node_path = self.robot_paths[robot_B]["node_path"]
         nodes = self.graph_network.dynamic_graph.nodes
+        print("using lane rules", flush=True)
         # robot_A_stays_on_same_lane = (nodes[robot_A_current_node]["lane"] == nodes[robot_A_next_node]["lane"])
         # robot_B_stays_on_same_lane = (nodes[robot_B_current_node]["lane"] == nodes[robot_B_next_node]["lane"])
         # if robot_A_stays_on_same_lane != robot_B_stays_on_same_lane:
         #     return robot_A_stays_on_same_lane # the robot that stays on the same lane has priority
         if nodes[robot_A_node_path[0]]["lane"] == nodes[robot_B_node_path[0]]["lane"]:
+            print("yes same lane", flush=True)
             return self.prioritise_robots_on_same_lane(robot_A, robot_B)
         else:
+            print("no same lane", flush=True)
             return self.prioritise_robots_on_different_lanes(robot_A, robot_B)
         
     def prioritise_robots_on_same_lane(self, robot_A: str, robot_B: str) -> bool:
@@ -835,6 +931,7 @@ class DetermineRobotsPriority(py_trees.behaviour.Behaviour):
         Returns:
             bool: True if robot_A has higher priority than robot_B
         """
+        print("Prioritising on same lane", flush=True)
         robot_A_node_path = self.robot_paths[robot_A]["node_path"]
         robot_A_pose_path = self.robot_paths[robot_A]["pose_path"]
         robot_B_pose_path = self.robot_paths[robot_B]["pose_path"]
@@ -874,6 +971,7 @@ class DetermineRobotsPriority(py_trees.behaviour.Behaviour):
         Returns:
             bool: True if robot_A has higher priority than robot_B
         """
+        print("Prioritising on different lane", flush=True)
         danger_area_A = self.danger_areas[robot_A]
         danger_area_B = self.danger_areas[robot_B]
         danger_area_overlap = danger_area_A.intersection(danger_area_B)
@@ -882,11 +980,81 @@ class DetermineRobotsPriority(py_trees.behaviour.Behaviour):
             if danger_area_overlap.overlaps(intersection):
                 return False # maintain old priority
         else:
-            # danger area outside of intersection. Unknown situation.
-            self.robot_fsms[robot_A].lose_control()
-            self.robot_fsms[robot_B].lose_control()
-            blackboard.set("robot_FSMs", self.robot_fsms)
+
+            # print("Lane collision: danger area outside of intersection. Unknown situation.", flush=True)
+            # self.robot_fsms[robot_A].lose_control()
+            # self.robot_fsms[robot_B].lose_control()
+            # blackboard.set("robot_FSMs", self.robot_fsms)
             return True
+        
+    def intersection_priority(self, robot_A:str, robot_B:str) -> Optional[bool]:
+        """
+        TODO: should check if danger area overlap is in the intersection too, if it is not, then it should not follow intersection rules
+        Returns:
+            bool: True if robot_A has higher priority, False if robot_B has higher priority,
+                None if priority is undecided
+        """
+        for value in self.intersections_reserved.values():
+            if value == "free_intersection":
+                continue
+            else:
+                if value["reserved_for"] == robot_A and robot_B in value["waiting"]:
+                    self.robot_fsms[robot_B].wait()
+                    return True
+                elif value["reserved_for"] == robot_B and robot_A in value["waiting"]:
+                    self.robot_fsms[robot_A].wait()
+                    return False
+        else:
+            return None
+
+    def reserve_intersection(self, robot:str) -> None:
+        """
+        Reserve free intersection if overlaps with danger area
+        """
+        for intersection, value in self.intersections_reserved.items():
+            if self.danger_areas[robot].overlaps(intersection):
+                if value != "free_intersection":
+                    if value["reserved_for"] == robot or robot in value["waiting"]:
+                        return
+                    value["waiting"].append(robot)
+                    return
+                else:
+                    # Reserve the intersection for the robot.
+                    self.intersections_reserved[intersection] = {"reserved_for": robot, "waiting": []}
+                return
+        return
+
+    def manage_intersections(self) -> None:
+        """
+        Checks all intersections,
+        if the robot's danger area intersects an intersection,
+        reserve it if it is free.
+        """
+        # first, free all cleared intersection
+        for crossing, value in self.intersections_reserved.items():
+            if value != "free_intersection":
+                # print("is stll in intersection?", self.danger_areas[value["reserved_for"]].overlaps(crossing), flush=True)
+                def plot_polygon(ax, polygon, color, label):
+                    if not polygon.is_empty:
+                        x, y = polygon.exterior.xy
+                        ax.fill(x, y, alpha=0.5, fc=color, label=label)
+                fig, ax = plt.subplots()
+                plot_polygon(ax, self.danger_areas[value["reserved_for"]], 'blue', 'Polygon 1')
+                plot_polygon(ax, crossing, 'green', 'Polygon 2')
+                ax.legend()
+                ax.set_title("Shapely Polygons Visualization")
+                plt.xlabel("X")
+                plt.ylabel("Y")
+                plt.grid(True)
+                # plt.show()
+            if (
+                value != "free_intersection" and
+                not self.danger_areas[value["reserved_for"]].overlaps(crossing)
+            ):
+                # robot no longer overlaps intersection
+                self.intersections_reserved[crossing] = "free_intersection"
+        for robot in self.robot_names:
+            self.reserve_intersection(robot)
 
     def has_higher_priority(self, robot_A: str, robot_B: str) -> bool:
         """
@@ -900,23 +1068,26 @@ class DetermineRobotsPriority(py_trees.behaviour.Behaviour):
         """
         state_A = self.robot_fsms[robot_A].state
         state_B = self.robot_fsms[robot_B].state
-        if state_B == "idle" or state_B == "error":
-            # set A to wait, decide on movement next tick
-            self.robot_fsms[robot_A].wait()
-            blackboard.set("robot_FSMs", self.robot_fsms)
-            return True
-        if state_B == "waiting":
-            # B is waiting, it has priority
-            # B should be checked first
-            return False
-        if state_A == "waiting":
-            # A is waiting, it has priority
-            return True
+        
         danger_area_A = self.danger_areas[robot_A]
         danger_area_B = self.danger_areas[robot_B]
+        intersection_result = self.intersection_priority(robot_A, robot_B)
+        if intersection_result is not None:
+            return intersection_result
         if not danger_area_A.intersects(danger_area_B):
             # no intersection, no priority change
             return False
+        
+        if state_B in ("idle", "waiting", "error"):
+            # set A to wait, decide on movement next tick
+            self.robot_fsms[robot_A].wait()
+            blackboard.set("robot_FSMs", self.robot_fsms)
+            return False
+        if state_A in ("idle", "waiting", "error"):
+            # A is waiting, it has priority
+            self.robot_fsms[robot_B].wait()
+            blackboard.set("robot_FSMs", self.robot_fsms)
+            return True
         if state_A == state_B == "move_by_sampling":
             if self.goal_not_blocked(robot_A, robot_B):
                 self.replan_sampling(robot_A, robot_B)  # TODO check if covers goal!
@@ -953,21 +1124,9 @@ class DetermineRobotsPriority(py_trees.behaviour.Behaviour):
         else:
             self.priority_list.append(robot_name)
 
-    def move_all_waiting_to_the_end(self):
-        """
-        Moves all wait/idle/error robots to the end of the priority list
-        """
-        waiting_robots = []
-        active_robots = []
-
-        for robot in self.priority_list:
-            state = self.robot_fsms[robot].state
-            if state in {"waiting", "idle", "error"}:
-                waiting_robots.append(robot)
-            else:
-                active_robots.append(robot)
-
-        self.priority_list = active_robots + waiting_robots
+    def initialise(self):
+        self.priority_list:list[str] = []
+        return super().initialise()
 
     def update(self) -> Status:
         self.robot_names = blackboard.get("robot_names")
@@ -979,10 +1138,13 @@ class DetermineRobotsPriority(py_trees.behaviour.Behaviour):
         self.robot_paths = blackboard.get("robot_paths")
         self.graph_network = blackboard.get("graph_network")
 
-        for robot_name in robot_names:
+        if self.intersections_reserved is None:
+            self.intersections_reserved = {item: "free_intersection" for item in self.graph_network.road_intersections}
+
+        self.manage_intersections()
+        for robot_name in self.robot_names:
             self.determine_priority(robot_name)
 
-        # self.move_all_waiting_to_the_end() # TODO: do we need this?
         blackboard.set("priority_list", self.priority_list)
 
         return py_trees.common.Status.SUCCESS
@@ -995,25 +1157,26 @@ class MoveRobots(py_trees.behaviour.Behaviour):
         self.robot_fsms: dict[str, RobotFSM] = None
         self.danger_areas: dict[str, Polygon] = None
         self.robots_to_move: List[str] = None
+        self.graph_network: RoadTrack = None
 
-        self.intersections_reserved = None
+        # self.intersections_reserved = None
 
-    def reserve_intersections(self, robot:str) -> None:
-        """
-        Reserve intersection if robot in intersection
-        """
-        if self.robot_fsms[robot].state in ("idle", "waiting", "error"):
-            return None
-        for intersection, is_reserved in self.intersections_reserved.items():
-            if self.danger_areas[robot].overlaps(intersection):
-                if is_reserved:
-                    # If the intersection is already reserved, set the robot to wait.
-                    self.robot_fsms[robot].wait()
-                else:
-                    # Reserve the intersection for the robot.
-                    self.intersections_reserved[intersection] = True
-                return
-        return None
+    # def reserve_intersection(self, robot:str) -> None:
+    #     """
+    #     Reserve intersection if robot in intersection
+    #     """
+    #     if self.robot_fsms[robot].state in ("idle", "waiting", "error"):
+    #         return None
+    #     for intersection, is_reserved in self.intersections_reserved.items():
+    #         if self.danger_areas[robot].overlaps(intersection):
+    #             if is_reserved:
+    #                 # If the intersection is already reserved, set the robot to wait.
+    #                 self.robot_fsms[robot].wait()
+    #             else:
+    #                 # Reserve the intersection for the robot.
+    #                 self.intersections_reserved[intersection] = True
+    #             return
+    #     return None
     
     def final_move_check(self, priority_list: List[str]):
         """
@@ -1022,11 +1185,11 @@ class MoveRobots(py_trees.behaviour.Behaviour):
         robots_to_move = []
         for i, robot in enumerate(priority_list):
             robot_DA = self.danger_areas[robot]
-            if self.robot_fsms[robot] in ("idle", "waiting", "error"):
+            if self.robot_fsms[robot].state in ("idle", "waiting", "error"):
                 continue
             if any(robot_DA.overlaps(self.danger_areas[prioritised_robot])
                 for prioritised_robot in priority_list[:i]):
-                self.robot_fsms.wait()
+                self.robot_fsms[robot].wait()
             else:
                 robots_to_move.append(robot)
         blackboard.set("robots_to_move", robots_to_move)
@@ -1034,10 +1197,11 @@ class MoveRobots(py_trees.behaviour.Behaviour):
     def update(self) -> Status:
         self.robot_fsms = blackboard.get("robot_FSMs")
         self.danger_areas = blackboard.get("danger_areas")
-        self.intersections_reserved = {item: False for item in self.graph_network.road_intersections}
+        self.graph_network = blackboard.get("graph_network")
+        # self.intersections_reserved = {item: False for item in self.graph_network.road_intersections}
         priority_list = blackboard.get("priority_list")
-        for robot in priority_list:
-            self.reserve_intersection(robot)
+        # for robot in priority_list:
+        #     self.reserve_intersection(robot)
         self.final_move_check(priority_list)
         return py_trees.common.Status.SUCCESS
 
@@ -1077,18 +1241,24 @@ class FleetManagerTree:
                 self.robot_names += [f"robot_{i}"]
         self.vehicle_types = vehicle_types
 
+        # self.logger = logging.getLogger("FleetManagerTree")
         self.root = self.create_fleet_manager_tree()
         self.tree = py_trees.trees.BehaviourTree(self.root)
+        # py_trees.logging.level = py_trees.logging.Level.DEBUG 
 
     def create_fleet_manager_tree(self):
         root = py_trees.composites.Selector("Fleet Manager", memory=False)
-
         call_for_help = CallForHelp()
-
         fetch_missions_tree = create_fetch_missions_tree()
         plan_paths_tree = create_plan_paths_tree(self.robot_names)
         compute_danger_areas_tree = create_compute_danger_areas_tree(self.robot_names)
         prioritise_and_move_robots_tree = create_prioritise_and_move_robots_tree()
+        # root = LoggingSelector("Fleet Manager", memory=False)
+        # call_for_help = LoggingLeaf(name="Call For Help")
+        # fetch_missions_tree = LoggingDecorator(create_fetch_missions_tree(), "Fetch Missions Tree")
+        # plan_paths_tree = LoggingDecorator(create_plan_paths_tree(self.robot_names), "Plan Paths Tree")
+        # compute_danger_areas_tree = LoggingDecorator(create_compute_danger_areas_tree(self.robot_names), "Compute Danger Areas Tree")
+        # prioritise_and_move_robots_tree = LoggingDecorator(create_prioritise_and_move_robots_tree(), "Prioritise and Move Robots Tree")
 
         main_tasks_sequence = py_trees.composites.Sequence(
             "Main Tasks Sequence", memory=False
@@ -1102,11 +1272,13 @@ class FleetManagerTree:
             ]
         )
 
-        root.add_children([call_for_help, main_tasks_sequence])
+        root.add_children([main_tasks_sequence, call_for_help])
         return root
 
     def tick(self):
         self.tree.tick()
+        fsms = blackboard.get("robot_FSMs")
+        print("State", [x.state for x in fsms.values()], flush=True)
 
     def get_robots_to_move(self) -> List[str]:
         return blackboard.get("robots_to_move") if blackboard.exists("robots_to_move") else []
@@ -1116,6 +1288,16 @@ class FleetManagerTree:
         if paths == []:
             return None
         return paths[robot]["pose_path"]
+    
+    def get_danger_areas(self) -> List[Polygon]:
+        danger_areas_dict = blackboard.get("danger_areas")
+        return [x for x in danger_areas_dict.values()]
+
+    def set_robot_poses_goals(self, poses_and_goals: Dict) -> None:
+        """
+        Sets poses and goals
+        """
+        blackboard.set("robot_poses_goals", poses_and_goals)
 
     def setup(self):
         """

@@ -251,7 +251,7 @@ class RoadMap:
                     node_color="orange",
                 )
 
-            nx.draw_networkx_labels(graph, pos, ax=ax, font_size=8, font_color="black")
+            # nx.draw_networkx_labels(graph, pos, ax=ax, font_size=8, font_color="black")
 
         # Plot the pose path
         if pose_path is not None:
@@ -452,7 +452,7 @@ class RoadTrack:
             raise ValueError("Invalid direction for Bezier control points")
         return cp1, cp2
 
-    def bezier_curve(self, start: Point, end: Point, direction: int, num_points: int = 15) -> LineString:
+    def bezier_curve(self, start: Point, end: Point, direction: int, num_points: int = 25) -> LineString:
         """
         Generates a cubic Bezier curve between two points.
 
