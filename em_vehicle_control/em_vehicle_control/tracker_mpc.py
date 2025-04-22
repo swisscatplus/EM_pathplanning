@@ -97,7 +97,7 @@ class Tracker(Node):
     def get_robot_pose(self) -> PosePt2D:
         try:
             transform: TransformStamped = self.tf_buffer.lookup_transform(
-                "world",  # Target frame
+                "map",  # Target frame, I changed it to map, it's world in Jasper's version
                 f"{self.robot_name}/base_link",  # Source frame
                 rclpy.time.Time(),
                 Duration(seconds=1.0),
