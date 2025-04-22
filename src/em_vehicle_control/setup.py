@@ -27,6 +27,7 @@ setup(
             'tracker = em_vehicle_control.tracker_mpc:main',
             'planner_demo = em_vehicle_control.planner_demo:main',
             'tracker_demo = em_vehicle_control.tracker_mpc_demo:main',
+            'publish_path = em_vehicle_control.publish_path:main',
             # 'pose2d_publisher = em_vehicle_control.pose2d_publisher:main',
             # 'pose2d_subscriber = em_vehicle_control.pose2d_subscriber:main',
         ],

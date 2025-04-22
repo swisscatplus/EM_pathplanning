@@ -49,6 +49,7 @@ class Tracker(Node):
         # Parameters #
         ##############
         self.path = None
+        self.path = None
         self.path_msg_lock = threading.Lock()
 
         self.path_subscription = self.create_subscription(
