@@ -13,31 +13,21 @@ class SimplePathPublisher(Node):
         self.max_repeats = 1
         self.timer = self.create_timer(1.0, self.timer_callback)
 
-        # Define the path once
         self.msg = Path2D()
-        pose_start = Pose2D()
-        pose_start.x = 0.0
-        pose_start.y = 0.0
-        pose_start.direction_flag = Pose2D.FORWARD
 
-        self.msg.poses.append(pose_start)
+        poses_coordinates = [
+            (0.0, 0.0),
+            (0.5, 0.0),
+            (1.0, 0.5),
+            (1.0, 1.0)
+        ]
 
-        pose_end = Pose2D()
-        pose_end.x = 0.5
-        pose_end.y = 0.0
-        pose_end.direction_flag = Pose2D.FORWARD
-
-        self.msg.poses.append(pose_end)
-
-        pose_end.x = 1.0
-        pose_end.y = 0.5
-
-        self.msg.poses.append(pose_end)
-
-        pose_end.x = 1.0
-        pose_end.y = 1.0
-
-        self.msg.poses.append(pose_end)
+        for x, y in poses_coordinates:
+            pose = Pose2D()
+            pose.x = x
+            pose.y = y
+            pose.direction_flag = Pose2D.FORWARD
+            self.msg.poses.append(pose)
 
     def timer_callback(self):
         if self.counter < self.max_repeats:
