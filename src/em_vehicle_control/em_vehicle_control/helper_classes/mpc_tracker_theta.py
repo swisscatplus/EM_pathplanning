@@ -457,6 +457,9 @@ class MPCTracker:
         dy = goal.y - tmp_pt.y
         goal_angle = np.arctan2(dy, dx)
         angle_diff = np.absolute((current_pose[2] - goal_angle + np.pi) % (2 * np.pi) - np.pi)
+        s_str = f"{self.s:.2f}" if self.s is not None else "None"
+        print(f"[MPC] dist²={goal_distance_sq:.4f}  angle_diff={angle_diff:.4f}  s={s_str}", flush=True)
+
         if (goal_distance_sq < self.goal_radius**2) and (angle_diff < self.goal_angle_tol) and self.s > 0.5:
             return True
         return False

@@ -11,7 +11,8 @@ def generate_launch_description():
         executable='tracker',
         name='tracker',
         parameters=[{'robot_name': robot_name}],
-        output='screen'
+        output='screen',
+        arguments=['--ros-args', '--log-level', 'info'],
     )
 
     return LaunchDescription([

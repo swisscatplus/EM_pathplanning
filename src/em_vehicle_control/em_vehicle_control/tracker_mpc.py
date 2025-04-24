@@ -1,3 +1,6 @@
+# ros2 run em_vehicle_control publish_path
+
+
 from scipy.spatial.transform import Rotation as R
 import networkx as nx
 from shapely import LineString, Point, MultiLineString, MultiPoint
@@ -76,6 +79,8 @@ class Tracker(Node):
         if self.plot_rviz:
             self.marker_publisher = self.create_publisher(MarkerArray, 'visualization_marker_array', 10)
 
+        self.get_logger().info("✅ Tracker node initialized.")
+
     def path_subscription(self, msg):
         with self.path_msg_lock:
             self.path = msg.poses
@@ -99,7 +104,8 @@ class Tracker(Node):
         try:
             transform: TransformStamped = self.tf_buffer.lookup_transform(
                 "map",  # Target frame, I changed it to map, it's world in Jasper's version
-                f"{self.robot_name}/base_link",  # Source frame
+                #f"{self.robot_name}/base_link",  # Source frame
+                f"base_link",
                 rclpy.time.Time(),
                 Duration(seconds=1.0),
             )
@@ -133,8 +139,16 @@ class Tracker(Node):
         robot_pose = self.get_robot_pose()
         if robot_pose is None:
             return
-        
+
         segments = create_segments(self.path)
+
+        if self.tracker.check_goal(robot_pose, segments):
+            self.get_logger().info("Goal reached! Stopping and clearing path.")
+            self.pub_twist(0.0, 0.0)
+            self.path = None
+            return
+
+
         tic = time()
         if not self.plot_rviz:
             v, omega = self.tracker.track(robot_pose, segments)
@@ -202,7 +216,7 @@ class Tracker(Node):
     def delete_all_markers(self):
         """Create a marker to delete all previous markers."""
         marker = Marker()
-        marker.header.frame_id = f'{self.robot_name}/base_link'
+        marker.header.frame_id = f'/base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.action = Marker.DELETEALL
         return marker

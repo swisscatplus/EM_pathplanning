@@ -20,23 +20,12 @@ class SimplePathPublisher(Node):
         pose_start.y = 0.0
         pose_start.direction_flag = Pose2D.FORWARD
 
-        self.msg.poses.append(pose_start)
-
         pose_end = Pose2D()
         pose_end.x = 0.5
-        pose_end.y = 0.0
-        pose_end.direction_flag = Pose2D.FORWARD
+        pose_end.y = 0.05
+        pose_start.direction_flag = Pose2D.FORWARD
 
-        self.msg.poses.append(pose_end)
-
-        pose_end.x = 1.0
-        pose_end.y = 0.5
-
-        self.msg.poses.append(pose_end)
-
-        pose_end.x = 1.0
-        pose_end.y = 1.0
-
+        self.msg.poses.append(pose_start)
         self.msg.poses.append(pose_end)
 
     def timer_callback(self):
