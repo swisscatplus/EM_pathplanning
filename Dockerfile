@@ -5,7 +5,6 @@ FROM ros:humble-ros-base
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=humble
 ENV ROS_DOMAIN_ID=10
-ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
 # Install ROS & system packages
 RUN apt-get update && apt-get install -y \
@@ -16,7 +15,6 @@ RUN apt-get update && apt-get install -y \
     curl \
     lsb-release \
     gnupg \
-    ros-humble-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python packages
@@ -27,6 +25,10 @@ RUN pip3 install \
     networkx \
     cvxpy
 
+# === ADD FASTDDS CONFIG FILE ===
+RUN mkdir -p /root/.ros
+COPY fastdds.xml /root/.ros/fastdds.xml
+ENV FASTRTPS_DEFAULT_PROFILES_FILE=/root/.ros/fastdds.xml
 
 # Create and set workspace directory
 RUN mkdir -p /ros2_ws/src

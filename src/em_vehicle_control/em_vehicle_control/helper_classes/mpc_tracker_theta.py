@@ -1,7 +1,7 @@
 import numpy as np
 import cvxpy as cp
 from shapely import Point, LineString
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Union
 from copy import deepcopy
 from statistics import mode
 
@@ -30,7 +30,7 @@ class MPCTracker:
         # cost function weights
         self.q_p = 8.0  # position error weight
         self.d_p = 1.0  # discount factor for position errors
-        self.q_theta = 4.0  # orientation error weight
+        self.q_theta = 0.5  # orientation error weight
         self.d_theta = 1.0  # discount factor for orientation errors
         self.r_v = 1.0  # linear speed control effort
         self.r_omega = 1.0  # angular speed control effort
@@ -38,7 +38,7 @@ class MPCTracker:
         self.r_omega_smooth = 0.1  # smoothing angular velocity command
         self.q_p_terminal = 10.0  # terminal error cost
         self.q_theta_terminal = 10.0  # terminal error cost
-        self.t_p = 0 # transitioning position cost reduction
+        self.t_p = 0  # transitioning position cost reduction
 
         # other parameters
         self.nominal_speed = self.v_max
@@ -81,6 +81,11 @@ class MPCTracker:
         for seg in path:
             self.path_length += seg.length
 
+    def is_at_goal_position(self, current_pose: Pose2D, path: List[Segment]) -> bool:
+        goal = path[-1].end
+        goal_distance_sq = (current_pose[0] - goal.x) ** 2 + (current_pose[1] - goal.y) ** 2
+        return goal_distance_sq < self.goal_radius ** 2 and self.s is not None and self.s > 0.5
+
     def compute_final_theta(self, path: List[Segment]) -> None:
         """
         Computes final theta for when path is too short to compute the angle.
@@ -94,10 +99,10 @@ class MPCTracker:
         if path[-1].direction == -1:
             # Correctly adjust by adding π radians
             self.final_theta += np.pi
-        
+        #
         # Normalize the angle to [-π, π]
         self.final_theta = (self.final_theta + np.pi) % (2 * np.pi) - np.pi
-        
+        #
         theta_a = (np.arctan2(dy, dx) + 2*np.pi) % (2*np.pi) - np.pi
         theta_b = np.arctan2(dy, dx) + np.pi
         theta_b = (theta_b + np.pi) % (2 * np.pi) - np.pi
@@ -447,22 +452,32 @@ class MPCTracker:
         self.path_length = None
         self.final_theta = None
 
-    def check_goal(self, current_pose: Pose2D, path: List[Segment]) -> bool:
+    def check_goal(self, current_pose: Pose2D, path: List[Segment], return_angle: bool = False) -> Union[
+        bool, Tuple[bool, float]]:
         goal = path[-1].end
         tmp_pt = path[-1].start
-        if tmp_pt == goal:
+        if tmp_pt == goal and len(path) > 1:
             tmp_pt = path[-2].start
         goal_distance_sq = (current_pose[0] - goal.x) ** 2 + (current_pose[1] - goal.y) ** 2
-        dx = goal.x - tmp_pt.x
-        dy = goal.y - tmp_pt.y
-        goal_angle = np.arctan2(dy, dx)
-        angle_diff = np.absolute((current_pose[2] - goal_angle + np.pi) % (2 * np.pi) - np.pi)
+
+        if self.final_theta is None:
+            self.compute_final_theta(path)
+        goal_angle = self.final_theta
+
+        angle_diff = np.abs((goal_angle - current_pose[2] + np.pi) % (2 * np.pi) - np.pi)
         s_str = f"{self.s:.2f}" if self.s is not None else "None"
         print(f"[MPC] dist²={goal_distance_sq:.4f}  angle_diff={angle_diff:.4f}  s={s_str}", flush=True)
 
-        if (goal_distance_sq < self.goal_radius**2) and (angle_diff < self.goal_angle_tol) and self.s > 0.5:
-            return True
-        return False
+        goal_reached = (
+                (goal_distance_sq < self.goal_radius ** 2) and
+                (angle_diff < self.goal_angle_tol) and
+                self.s is not None and self.s > 0.5
+        )
+
+        if return_angle:
+            return goal_reached, angle_diff
+        else:
+            return goal_reached
 
     def track(self, current_pose: PosePt2D, path: List[Segment]) -> Tuple[float, float]:
         """

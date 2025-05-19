@@ -130,40 +130,49 @@ class Tracker(Node):
     def control_loop(self):
         """
         Control loop that manages and runs the MPC tracker,
-        and publishes velocity commands
+        and publishes velocity commands. When the robot reaches the final position
+        but is not aligned with the final heading, it rotates in place.
         """
         if self.path is None or self.path == []:
-            # print("Robot has no path. Stopping", flush=True)
-            self.pub_twist(0.0,0.0)
+            self.pub_twist(0.0, 0.0)
             return
+
         robot_pose = self.get_robot_pose()
         if robot_pose is None:
             return
 
         segments = create_segments(self.path)
 
-        if self.tracker.check_goal(robot_pose, segments):
-            self.get_logger().info("Goal reached! Stopping and clearing path.")
+        # Check if robot has reached goal (both pos & angle) or is just at final pos
+        goal_reached, angle_diff = self.tracker.check_goal(robot_pose, segments, return_angle=True)
+
+        if goal_reached:
+            self.get_logger().info("✅ Goal reached! Stopping and clearing path.")
             self.pub_twist(0.0, 0.0)
             self.path = None
             return
 
+        # Only rotate if robot is at the goal position (but not aligned)
+        if self.tracker.is_at_goal_position(robot_pose, segments) and angle_diff > self.tracker.goal_angle_tol:
+            if self.tracker.final_theta is None:
+                self.tracker.compute_final_theta(segments)
+            final_theta = self.tracker.final_theta
+            angle_error = (final_theta - robot_pose[2] + np.pi) % (2 * np.pi) - np.pi
+            gain = 2.0  # Tune this gain as needed
+            omega = np.clip(gain * angle_error, -self.tracker.omega_max, self.tracker.omega_max)
+            self.pub_twist(0.0, omega)
+            return
 
-        tic = time()
+        # Otherwise, use MPC to track path
         if not self.plot_rviz:
             v, omega = self.tracker.track(robot_pose, segments)
         else:
             marker_array = MarkerArray()
-            # delete_marker = self.delete_all_markers()
-            # marker_array.markers.append(delete_marker)
-            v, omega, x, y, theta = self.tracker.track(robot_pose, segments) 
+            v, omega, x, y, theta = self.tracker.track(robot_pose, segments)
             for i, (x_, y_, theta_) in enumerate(zip(x, y, theta)):
                 marker = self.create_arrow_marker(x_, y_, robot_pose[2] + theta_, i)
                 marker_array.markers.append(marker)
             self.marker_publisher.publish(marker_array)
-                
-        toc = time()
-        # self.get_logger().info(f"{toc-tic}")
 
         self.pub_twist(v, omega)
 

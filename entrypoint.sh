@@ -1,6 +1,12 @@
 #!/bin/bash
 set -e
 
+export ROS_DOMAIN_ID=10
+
+# Ensure Fast DDS profile path is active (optional but safe)
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export FASTRTPS_DEFAULT_PROFILES_FILE=/root/.ros/fastdds.xml
+
 # Source ROS2 environment
 source /opt/ros/humble/setup.bash
 source /ros2_ws/install/setup.bash
