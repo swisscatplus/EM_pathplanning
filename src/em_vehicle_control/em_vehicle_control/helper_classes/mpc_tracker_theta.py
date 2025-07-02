@@ -44,7 +44,7 @@ class MPCTracker:
         self.nominal_speed = self.v_max
         self.nominal_dl = self.dt * self.nominal_speed
         self.goal_radius = 0.03  # 30mm
-        self.goal_angle_tol = 0.0873 # rad or 5 deg
+        self.goal_angle_tol = 0.15 #0.0873 # rad or 5 deg
 
         # Progress variable
         self.s = None  # percentage progress along the path

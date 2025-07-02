@@ -15,7 +15,17 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info'],
     )
 
+    path_node = Node(
+        package='em_vehicle_control',
+        executable='publish_path',
+        name='path_publisher',
+        output='screen',
+        parameters=[{'start_immediately': True}],  # Optional parameter
+        arguments=['--ros-args', '--log-level', 'info'],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument('robot_name', default_value='robot1'),
-        tracker_node
+        tracker_node,
+        path_node
     ])

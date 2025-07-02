@@ -15,12 +15,14 @@ find_package(std_msgs REQUIRED)
 set(msg_files
   "msg/Pose2D.msg"
   "msg/Path2D.msg"
+  "srv/SwitchPath.srv"
 )
 
 # Generate messages
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Pose2D.msg"
   "msg/Path2D.msg"
+  "srv/SwitchPath.srv"
   DEPENDENCIES std_msgs
 )
 
