@@ -5,7 +5,7 @@
       <transport_id>udp_transport</transport_id>
       <type>UDPv4</type>
       <interfaceWhiteList>
-        <address>192.168.0.15</address>
+        <address>10.5.0.93</address>
       </interfaceWhiteList>
     </transport_descriptor>
   </transport_descriptors>
