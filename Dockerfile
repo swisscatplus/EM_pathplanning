@@ -4,7 +4,7 @@ FROM ros:humble-ros-base
 # Environment setup
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=humble
-ENV ROS_DOMAIN_ID=10
+ENV ROS_DOMAIN_ID=45
 
 # Install ROS & system packages
 RUN apt-get update && apt-get install -y \
