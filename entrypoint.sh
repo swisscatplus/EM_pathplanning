@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-export ROS_DOMAIN_ID=45
+export ROS_DOMAIN_ID=10
 
 # Ensure Fast DDS profile path is active (optional but safe)
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
@@ -12,4 +12,4 @@ source /opt/ros/humble/setup.bash
 source /ros2_ws/install/setup.bash
 
 # Execute your launch file with specified robot_name
-exec ros2 launch em_vehicle_control tracker_multi.launch.py
+exec ros2 launch em_vehicle_control tracker.launch.py

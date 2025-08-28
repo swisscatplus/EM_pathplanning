@@ -1,4 +1,4 @@
-# ros2 service call /switch_path em_vehicle_control_msgs/srv/SwitchPath "{path_id: 5, direction: 1}"
+# ros2 service call /switch_path em_vehicle_control_msgs/srv/SwitchPath "{path_id: 1, direction: -1}"
 
 import rclpy
 from rclpy.node import Node
