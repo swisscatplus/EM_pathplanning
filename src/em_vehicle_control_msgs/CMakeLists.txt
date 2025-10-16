@@ -16,6 +16,8 @@ set(msg_files
   "msg/Pose2D.msg"
   "msg/Path2D.msg"
   "srv/SwitchPath.srv"
+  "srv/PlanPath.srv"
+  "srv/CancelPath.srv"
 )
 
 # Generate messages
@@ -23,6 +25,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Pose2D.msg"
   "msg/Path2D.msg"
   "srv/SwitchPath.srv"
+  "srv/PlanPath.srv"
+  "srv/CancelPath.srv"
   DEPENDENCIES std_msgs
 )
 

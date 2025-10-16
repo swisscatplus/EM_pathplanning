@@ -23,12 +23,17 @@ RUN pip3 install \
     numpy \
     shapely \
     networkx \
-    cvxpy
+    cvxpy \
+    matplotlib \
+    py_trees \
+    transitions
+
+RUN apt-get update && apt-get install -y ros-humble-rmw-cyclonedds-cpp ros-humble-cyclonedds
 
 # === ADD FASTDDS CONFIG FILE ===
 RUN mkdir -p /root/.ros
 COPY fastdds.xml /root/.ros/fastdds.xml
-ENV FASTRTPS_DEFAULT_PROFILES_FILE=/root/.ros/fastdds.xml
+#ENV FASTRTPS_DEFAULT_PROFILES_FILE=/root/.ros/fastdds.xml
 
 # Create and set workspace directory
 RUN mkdir -p /ros2_ws/src

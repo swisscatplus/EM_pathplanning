@@ -44,7 +44,7 @@ class Planner(Node):
         self.declare_parameter("timer_period_s", 2.0)
 
         # Load YAML (roads + frame/timer if provided)
-        cfg_path = self._resolve_yaml_path(self.get_parameter("map_config").get_parameter_value().string_value)
+        cfg_path = self._resolve_yaml_path(self.get_parameter("map_config").value)
         config = self._load_yaml(cfg_path)
 
         self.frame_id: str = self._get_param_or_yaml("frame_id", config, default="map")
@@ -204,9 +204,10 @@ class Planner(Node):
             return yaml.safe_load(f) or {}
 
     def _get_param_or_yaml(self, key: str, yaml_root: dict, default=None):
-        ros_param = self.get_parameter(key)
-        if ros_param.type_ != rclpy.parameter.Parameter.Type.NOT_SET:
-            return ros_param.get_parameter_value()._value
+        param = self.get_parameter(key)
+        if param.type_ != rclpy.parameter.Parameter.Type.NOT_SET:
+            # returns native Python type (str/float/int/etc.)
+            return param.value
         return yaml_root.get(key, default)
 
     def _parse_roads(self, yaml_root: dict) -> List[RoadSegment]:
