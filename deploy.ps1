@@ -12,7 +12,6 @@ docker build -t $IMAGE_NAME .
 
 Write-Host "Starting new container..."
 docker run -d `
-  --network host `
   --name $CONTAINER_NAME `
   --cap-add SYS_ADMIN `
   --cap-add NET_ADMIN `

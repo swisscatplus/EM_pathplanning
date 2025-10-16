@@ -244,14 +244,19 @@ class Planner(Node):
         if not path:
             return path2d, nav_path
 
-        # final yaw sourced from stored goal
         goal_yaw = self.active.get(robot_name, {}).get("goal", (0.0, 0.0, 0.0))[2]
 
         for x_, y_, dirflag in path:
             x, y, d = float(x_), float(y_), int(dirflag)
 
             p2 = Pose2D()
-            p2.x, p2.y, p2.theta = x, y, 0.0
+            p2.x, p2.y = x, y
+            # If your custom Pose2D has an angle field, set it; otherwise skip
+            if hasattr(p2, "theta"):
+                p2.theta = 0.0
+            elif hasattr(p2, "yaw"):
+                p2.yaw = 0.0
+            # direction flag (your custom message supports this)
             p2.direction_flag = Pose2D.FORWARD if d == 1 else Pose2D.BACKWARD
             p2.header.stamp = self._to_time_msg(now)
             p2.header.frame_id = self.frame_id
@@ -263,10 +268,23 @@ class Planner(Node):
             ps.pose.position.x = x
             ps.pose.position.y = y
             ps.pose.position.z = 0.0
+            # For RViz path, keep orientation neutral per-point; we’ll set last pose below
             ps.pose.orientation.w = 1.0
             nav_path.poses.append(ps)
 
-        path2d.poses[-1].theta = float(goal_yaw)
+        # Set final yaw if the custom field exists
+        last = path2d.poses[-1]
+        if hasattr(last, "theta"):
+            last.theta = float(goal_yaw)
+        elif hasattr(last, "yaw"):
+            last.yaw = float(goal_yaw)
+        # Also orient the final RViz pose to match goal_yaw (optional but nice)
+        from math import sin, cos
+        qw = cos(goal_yaw * 0.5)
+        qz = sin(goal_yaw * 0.5)
+        nav_path.poses[-1].pose.orientation.z = qz
+        nav_path.poses[-1].pose.orientation.w = qw
+
         return path2d, nav_path
 
     @staticmethod
