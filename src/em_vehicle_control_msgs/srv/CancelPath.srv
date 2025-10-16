@@ -1,0 +1,4 @@
+string robot_name
+---
+bool ok
+string message

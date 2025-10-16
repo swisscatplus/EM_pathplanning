@@ -1,0 +1,11 @@
+frame_id: map            # shared world frame for planner & trackers
+timer_period_s: 2.0      # (optional) if you want to centralize this too
+
+robots:
+  - name: robot_1
+    namespace: robot_1
+    base_link_frame: robot_1/base_link   # optional if you follow the pattern
+  - name: robot_2
+    namespace: robot_2
+    base_link_frame: robot_2/base_link
+  # add more here
