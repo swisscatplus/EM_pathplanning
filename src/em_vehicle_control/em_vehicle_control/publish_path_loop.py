@@ -15,7 +15,7 @@ class LoopingPathPublisher(Node):
         )
         self.publisher = self.create_publisher(Path2D, 'path', qos)
 
-        self.timer_period = 60.0
+        self.timer_period = 80.0
         self.current_path_id = 1
         self.direction = 1  # 1 = FORWARD, -1 = BACKWARD
 

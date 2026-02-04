@@ -30,6 +30,7 @@ setup(
             'tracker_demo = em_vehicle_control.tracker_mpc_demo:main',
             'publish_path = em_vehicle_control.publish_path:main',
             'publish_path_loop = em_vehicle_control.publish_path_loop:main',
+            'publish_path_loop_manual = em_vehicle_control.publish_path_loop_manual:main',
             'planner_v2 = em_vehicle_control.planner_v2:main',
             'tracker_v2 = em_vehicle_control.tracker_mpc_v2:main',
             # 'pose2d_publisher = em_vehicle_control.pose2d_publisher:main',

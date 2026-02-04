@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y ros-humble-rmw-cyclonedds-cpp ros-humbl
 # === ADD FASTDDS CONFIG FILE ===
 RUN mkdir -p /root/.ros
 COPY fastdds.xml /root/.ros/fastdds.xml
-#ENV FASTRTPS_DEFAULT_PROFILES_FILE=/root/.ros/fastdds.xml
+ENV FASTRTPS_DEFAULT_PROFILES_FILE=/root/.ros/fastdds.xml
 
 # Create and set workspace directory
 RUN mkdir -p /ros2_ws/src

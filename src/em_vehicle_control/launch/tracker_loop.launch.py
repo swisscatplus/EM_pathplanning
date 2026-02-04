@@ -17,8 +17,8 @@ def generate_launch_description():
 
     path_node = Node(
         package='em_vehicle_control',
-        executable='publish_path_loop',
-        name='path_publisher_loop',
+        executable='publish_path_loop_manual',
+        name='path_publisher_loop_manual',
         output='screen',
         parameters=[{'start_immediately': True}],  # Optional parameter
         arguments=['--ros-args', '--log-level', 'info'],
