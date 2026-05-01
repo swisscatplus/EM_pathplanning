@@ -1,0 +1,36 @@
+name: em_pathplanning
+
+services:
+  em_pathplanning:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ${EM_PATHPLANNING_IMAGE:-em_pathplanning:dev}
+    network_mode: host
+    working_dir: /ros2_ws
+    stdin_open: true
+    tty: true
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-10}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      FASTRTPS_DEFAULT_PROFILES_FILE: /root/.ros/fastdds.xml
+    volumes:
+      - ..:/ros2_ws
+      - ../config/fastdds.xml:/root/.ros/fastdds.xml:ro
+      - em_pathplanning_colcon_build:/ros2_ws/build
+      - em_pathplanning_colcon_install:/ros2_ws/install
+      - em_pathplanning_colcon_log:/ros2_ws/log
+    command: >
+      bash -lc "set -e;
+      source /opt/ros/$$ROS_DISTRO/setup.bash;
+      cd /ros2_ws;
+      rm -rf build/em_vehicle_control build/em_vehicle_control_msgs;
+      rm -rf install/em_vehicle_control install/em_vehicle_control_msgs;
+      colcon build --symlink-install --packages-select em_vehicle_control_msgs em_vehicle_control;
+      source install/setup.bash;
+      ros2 launch em_vehicle_control tracker_loop.launch.py"
+
+volumes:
+  em_pathplanning_colcon_build:
+  em_pathplanning_colcon_install:
+  em_pathplanning_colcon_log:

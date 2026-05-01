@@ -791,11 +791,8 @@ class RRT_star_Reeds_Shepp(RRT_star):
         return artists  # Return the list of artists
     
 if __name__ == '__main__':
-    from helper_classes.map import RoadMap, RoadSegment, RoadGraph, RoadTrack
-    from helper_classes.global_plannar import GlobalPlannar
-    from helper_classes.vehicles import EdyMobile, Edison
-    from helper_classes.pathplanners.rrt import *
-    from helper_classes.pathplanners.pp_viz import RoadMapAnimator
+    from em_vehicle_control.helper_classes.map import RoadMap, RoadSegment
+    from em_vehicle_control.helper_classes.vehicles import EdyMobile
 
     test_roads = [
         RoadSegment((2.87,1.67), (3.52,4.67)),

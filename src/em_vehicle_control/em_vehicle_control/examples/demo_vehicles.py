@@ -1,12 +1,8 @@
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
-
-from helper_classes.vehicles import EdyMobile
 import matplotlib.pyplot as plt
 import numpy as np
+from em_vehicle_control.helper_classes.vehicles import EdyMobile
 
-test_edy = EdyMobile(start_position=[0.5, 0.5, (np.pi* 2) * (3/5)])
+test_edy = EdyMobile(start_position=[0.5, 0.5, (np.pi * 2) * (3 / 5)])
 
 ##########
 # Test 1 #
@@ -19,10 +15,10 @@ test_edy.visualise()
 dt = 0.01
 L = 0.2
 R = 0.2
-stage_A = True # move straight
-stage_B = False # going rightwards faster
-stage_C = False # going rightwards slower
-stage_D = False # slowing down and reverse 
+stage_A = True  # move straight
+stage_B = False  # going rightwards faster
+stage_C = False  # going rightwards slower
+stage_D = False  # slowing down and reverse
 X = []
 Y = []
 Theta = []

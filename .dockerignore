@@ -1,0 +1,14 @@
+.git
+.github
+.idea
+build
+install
+log
+**/__pycache__
+**/.pytest_cache
+*.pyc
+*.pyo
+captures
+*.bag
+*.db3
+*.mcap

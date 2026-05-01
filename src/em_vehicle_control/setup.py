@@ -1,13 +1,13 @@
-from setuptools import find_packages, setup
 from glob import glob
 import os
+from setuptools import find_packages, setup
 
 package_name = 'em_vehicle_control'
 
 setup(
     name=package_name,
     version='0.0.0',
-    packages=[package_name, f'{package_name}.helper_classes'],
+    packages=find_packages(),
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),

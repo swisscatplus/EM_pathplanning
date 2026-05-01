@@ -1,15 +1,14 @@
 import cv2
-import numpy as np
-from shapely.geometry import Polygon, MultiPolygon
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon as MplPolygon
+from shapely.geometry import MultiPolygon, Polygon
 
-def png_to_shapely(image_path: str, resolution: float, show_plot = False) -> Polygon:
+
+def png_to_shapely(image_path: str, resolution: float, show_plot=False) -> Polygon:
     image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    image_np = np.asarray(image)
     _, binary_image = cv2.threshold(image, 200, 255, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(binary_image, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-    cv2.drawContours(image, contours, -1, (0,255,0), 3)
+    cv2.drawContours(image, contours, -1, (0, 255, 0), 3)
 
     # Function to convert OpenCV contour to Shapely Polygon
     def contour_to_shapely(contour, scale=1.0):
@@ -60,7 +59,6 @@ def png_to_shapely(image_path: str, resolution: float, show_plot = False) -> Pol
         # Plotting the result
         fig, ax = plt.subplots(figsize=(10, 8))
 
-        # Convert and plot the MultiPolygon
         if isinstance(multi_polygon, MultiPolygon):
             for poly in multi_polygon:
                 patches = shapely_to_mplpolygon(poly, closed=True, edgecolor='black', facecolor='lightblue', alpha=0.5)
@@ -75,5 +73,5 @@ def png_to_shapely(image_path: str, resolution: float, show_plot = False) -> Pol
         ax.set_ylim(0, image.shape[0] * resolution)
         plt.gca().set_aspect('equal', adjustable='box')
         plt.show()
-    
+
     return multi_polygon, external_points, holes_points
