@@ -18,6 +18,7 @@ set(msg_files
   "srv/SwitchPath.srv"
   "srv/PlanPath.srv"
   "srv/CancelPath.srv"
+  "action/ExecutePath.action"
 )
 
 # Generate messages
@@ -27,6 +28,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SwitchPath.srv"
   "srv/PlanPath.srv"
   "srv/CancelPath.srv"
+  "action/ExecutePath.action"
   DEPENDENCIES std_msgs
 )
 

@@ -27,6 +27,25 @@ The default container command is:
 ros2 launch em_vehicle_control tracker_loop.launch.py
 ```
 
+## One-Shot Path Action
+
+For single-path execution controlled by another node, launch the tracker without
+the looping path publisher:
+
+```bash
+ros2 launch em_vehicle_control tracker_action.launch.py
+```
+
+Then send one of the built-in path IDs:
+
+```bash
+ros2 action send_goal /execute_path em_vehicle_control_msgs/action/ExecutePath "{path_id: 1}" --feedback
+```
+
+Current built-in paths are `1` for the forward path and `2` for the backward path.
+The action completes only when the MPC tracker reaches the final pose, or when
+the client cancels it.
+
 ## Docker Development
 
 Start the laptop development container:

@@ -2,32 +2,29 @@
 
 
 from scipy.spatial.transform import Rotation as R
-import networkx as nx
-from shapely import LineString, Point, MultiLineString, MultiPoint
+import math
 import threading
 import numpy as np
-from typing import Tuple, Union, List
-from enum import Enum
-from time import time
+from typing import Tuple
 
+from em_vehicle_control.path_registry import HardcodedPathProvider
 from em_vehicle_control.helper_classes.mpc_tracker_theta import MPCTracker
 from em_vehicle_control.helper_classes.segment import *
 
 import rclpy
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from tf2_ros import Buffer, TransformListener
-from geometry_msgs.msg import TransformStamped, Transform, Twist, Quaternion
+from geometry_msgs.msg import TransformStamped, Twist, Quaternion
+from em_vehicle_control_msgs.action import ExecutePath
 from em_vehicle_control_msgs.msg import Pose2D, Path2D
-import tf2_ros
 from rclpy.duration import Duration
 from visualization_msgs.msg import Marker, MarkerArray
-from std_msgs.msg import Header, ColorRGBA
+from std_msgs.msg import ColorRGBA
 
 PosePt2D = Tuple[float, float, float]  # (x, y, yaw) values
-
-class Direction(Enum):
-    FORWARD = 1
-    BACKWARD = -1
 
 class Tracker(Node):
     """
@@ -43,6 +40,12 @@ class Tracker(Node):
         self.robot_name = (
             self.get_parameter("robot_name").get_parameter_value().string_value
         )
+        self.declare_parameter("map_frame", "map")
+        self.declare_parameter("base_link_frame", "base_link")
+        self.map_frame = self.get_parameter("map_frame").get_parameter_value().string_value
+        self.base_link_frame = (
+            self.get_parameter("base_link_frame").get_parameter_value().string_value
+        )
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -53,7 +56,18 @@ class Tracker(Node):
         ##############
         self.path = None
         self.path = None
-        self.path_msg_lock = threading.Lock()
+        self.path_msg_lock = threading.RLock()
+        self.path_provider = HardcodedPathProvider()
+
+        self._goal_pending = False
+        self._active_goal_handle = None
+        self._active_path_id = None
+        self._active_action_done = threading.Event()
+        self._active_action_status = None
+        self._active_action_message = ""
+        self._last_distance_to_goal = math.inf
+        self._last_action_state = ExecutePath.Feedback.STATE_ACCEPTED
+        self._last_action_state_label = "accepted"
 
         self.path_subscription = self.create_subscription(
             Path2D, f"path", self.path_subscription, 1
@@ -79,12 +93,193 @@ class Tracker(Node):
         if self.plot_rviz:
             self.marker_publisher = self.create_publisher(MarkerArray, 'visualization_marker_array', 10)
 
+        self.action_callback_group = ReentrantCallbackGroup()
+        self.execute_path_server = ActionServer(
+            self,
+            ExecutePath,
+            "execute_path",
+            execute_callback=self.execute_path_callback,
+            goal_callback=self.execute_path_goal_callback,
+            cancel_callback=self.execute_path_cancel_callback,
+            callback_group=self.action_callback_group,
+        )
+
         self.get_logger().info("✅ Tracker node initialized.")
+        self.get_logger().info(
+            "Action server ready on /execute_path with path IDs: "
+            + ", ".join(str(path_id) for path_id in self.path_provider.available_path_ids())
+        )
 
     def path_subscription(self, msg):
         with self.path_msg_lock:
+            if self._active_goal_handle is not None:
+                self.get_logger().warn(
+                    "Ignoring topic path while an execute_path action is active."
+                )
+                return
             self.path = msg.poses
             self.tracker.initialise_new_path()
+
+    def execute_path_goal_callback(self, goal_request):
+        path_id = int(goal_request.path_id)
+        with self.path_msg_lock:
+            if not self.path_provider.has_path(path_id):
+                self.get_logger().warn(f"Rejecting unknown path_id={path_id}.")
+                return GoalResponse.REJECT
+
+            if self._goal_pending or self._active_goal_handle is not None or self.path:
+                self.get_logger().warn(
+                    f"Rejecting path_id={path_id}; tracker is already executing a path."
+                )
+                return GoalResponse.REJECT
+
+            self._goal_pending = True
+
+        self.get_logger().info(f"Accepted execute_path goal for path_id={path_id}.")
+        return GoalResponse.ACCEPT
+
+    def execute_path_cancel_callback(self, goal_handle):
+        with self.path_msg_lock:
+            if not self._same_goal_handle(goal_handle, self._active_goal_handle):
+                return CancelResponse.REJECT
+            self._cancel_active_action_locked("Action goal canceled by client.")
+        return CancelResponse.ACCEPT
+
+    def execute_path_callback(self, goal_handle):
+        path_id = int(goal_handle.request.path_id)
+        result = ExecutePath.Result()
+        result.path_id = path_id
+
+        with self.path_msg_lock:
+            self._goal_pending = False
+            if self._active_goal_handle is not None or self.path:
+                result.success = False
+                result.message = "Tracker is already executing a path."
+                goal_handle.abort()
+                return result
+
+            if not self.path_provider.has_path(path_id):
+                result.success = False
+                result.message = f"Unknown path_id={path_id}."
+                goal_handle.abort()
+                return result
+
+            path_msg = self.path_provider.build_path(
+                path_id,
+                stamp=self.get_clock().now().to_msg(),
+                frame_id=self.map_frame,
+            )
+            self.path = path_msg.poses
+            self.tracker.initialise_new_path()
+
+            self._active_goal_handle = goal_handle
+            self._active_path_id = path_id
+            self._active_action_status = None
+            self._active_action_message = ""
+            self._active_action_done.clear()
+            self._set_action_feedback_locked(
+                math.inf,
+                ExecutePath.Feedback.STATE_ACCEPTED,
+                "accepted",
+            )
+
+        self.get_logger().info(f"Executing path {path_id}.")
+
+        while rclpy.ok():
+            if self._active_action_done.wait(timeout=0.25):
+                break
+            if goal_handle.is_cancel_requested:
+                with self.path_msg_lock:
+                    self._cancel_active_action_locked("Action goal canceled by client.")
+                break
+            self._publish_action_feedback(goal_handle)
+
+        with self.path_msg_lock:
+            status = self._active_action_status
+            message = self._active_action_message
+
+            if status == "succeeded":
+                goal_handle.succeed()
+                result.success = True
+                result.message = message or f"Path {path_id} reached goal."
+            elif status == "canceled":
+                goal_handle.canceled()
+                result.success = False
+                result.message = message or "Action goal canceled."
+            else:
+                goal_handle.abort()
+                result.success = False
+                result.message = message or "Action goal aborted."
+
+            self._clear_active_action_locked(goal_handle)
+
+        return result
+
+    def _set_action_feedback_locked(self, distance_to_goal, state, state_label):
+        self._last_distance_to_goal = float(distance_to_goal)
+        self._last_action_state = int(state)
+        self._last_action_state_label = state_label
+
+    def _publish_action_feedback(self, goal_handle):
+        with self.path_msg_lock:
+            if not self._same_goal_handle(goal_handle, self._active_goal_handle):
+                return
+
+            feedback = ExecutePath.Feedback()
+            feedback.path_id = int(self._active_path_id)
+            feedback.distance_to_goal = (
+                self._last_distance_to_goal
+                if math.isfinite(self._last_distance_to_goal)
+                else -1.0
+            )
+            feedback.state = int(self._last_action_state)
+            feedback.state_label = self._last_action_state_label
+
+        goal_handle.publish_feedback(feedback)
+
+    def _complete_active_action_locked(self, status, message):
+        if self._active_goal_handle is None:
+            return
+        self._active_action_status = status
+        self._active_action_message = message
+        self._active_action_done.set()
+
+    def _cancel_active_action_locked(self, message):
+        if self._active_goal_handle is None:
+            return
+        self.pub_twist(0.0, 0.0)
+        self.path = None
+        self._set_action_feedback_locked(
+            0.0,
+            ExecutePath.Feedback.STATE_CANCELING,
+            "canceling",
+        )
+        self._complete_active_action_locked("canceled", message)
+
+    def _clear_active_action_locked(self, goal_handle):
+        if not self._same_goal_handle(goal_handle, self._active_goal_handle):
+            return
+        self._active_goal_handle = None
+        self._active_path_id = None
+        self._active_action_status = None
+        self._active_action_message = ""
+        self._active_action_done.clear()
+        self._set_action_feedback_locked(
+            math.inf,
+            ExecutePath.Feedback.STATE_ACCEPTED,
+            "accepted",
+        )
+
+    @staticmethod
+    def _same_goal_handle(left, right):
+        if left is right:
+            return True
+        if left is None or right is None:
+            return False
+        try:
+            return left.goal_id.uuid == right.goal_id.uuid
+        except AttributeError:
+            return False
 
     def pub_twist(self, v: float, omega: float) -> None:
         """
@@ -103,9 +298,8 @@ class Tracker(Node):
     def get_robot_pose(self) -> PosePt2D:
         try:
             transform: TransformStamped = self.tf_buffer.lookup_transform(
-                "map",  # Target frame, I changed it to map, it's world in Jasper's version
-                #f"{self.robot_name}/base_link",  # Source frame
-                f"base_link",
+                self.map_frame,
+                self.base_link_frame,
                 rclpy.time.Time(),
                 Duration(seconds=1.0),
             )
@@ -136,12 +330,27 @@ class Tracker(Node):
         if self.path is None or self.path == []:
             self.pub_twist(0.0, 0.0)
             return
+        if len(self.path) < 2:
+            self.get_logger().warn("Received a path with fewer than two poses; clearing it.")
+            self.pub_twist(0.0, 0.0)
+            self.path = None
+            self._complete_active_action_locked("aborted", "Path has fewer than two poses.")
+            return
 
         robot_pose = self.get_robot_pose()
         if robot_pose is None:
             return
 
         segments = create_segments(self.path)
+        distance_to_goal = math.hypot(
+            robot_pose[0] - self.path[-1].x,
+            robot_pose[1] - self.path[-1].y,
+        )
+        self._set_action_feedback_locked(
+            distance_to_goal,
+            ExecutePath.Feedback.STATE_TRACKING,
+            "tracking",
+        )
 
         # Check if robot has reached goal (both pos & angle) or is just at final pos
         goal_reached, angle_diff = self.tracker.check_goal(robot_pose, segments, return_angle=True)
@@ -150,10 +359,25 @@ class Tracker(Node):
             self.get_logger().info("✅ Goal reached! Stopping and clearing path.")
             self.pub_twist(0.0, 0.0)
             self.path = None
+            self._set_action_feedback_locked(
+                0.0,
+                ExecutePath.Feedback.STATE_REACHED,
+                "reached",
+            )
+            if self._active_goal_handle is not None:
+                self._complete_active_action_locked(
+                    "succeeded",
+                    f"Path {self._active_path_id} reached goal.",
+                )
             return
 
         # Only rotate if robot is at the goal position (but not aligned)
         if self.tracker.is_at_goal_position(robot_pose, segments) and angle_diff > self.tracker.goal_angle_tol:
+            self._set_action_feedback_locked(
+                distance_to_goal,
+                ExecutePath.Feedback.STATE_FINAL_ALIGN,
+                "final_align",
+            )
             if self.tracker.final_theta is None:
                 self.tracker.compute_final_theta(segments)
             final_theta = self.tracker.final_theta
@@ -235,14 +459,17 @@ class Tracker(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = Tracker()
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
 
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
-
-    node.destroy_node()
-    rclpy.shutdown()
+    finally:
+        executor.shutdown()
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

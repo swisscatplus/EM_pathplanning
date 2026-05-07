@@ -1,0 +1,19 @@
+# Goal
+int32 path_id
+---
+# Result
+bool success
+int32 path_id
+string message
+---
+# Feedback
+uint8 STATE_ACCEPTED=0
+uint8 STATE_TRACKING=1
+uint8 STATE_FINAL_ALIGN=2
+uint8 STATE_REACHED=3
+uint8 STATE_CANCELING=4
+
+int32 path_id
+float64 distance_to_goal
+uint8 state
+string state_label
