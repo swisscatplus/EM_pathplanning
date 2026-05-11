@@ -46,6 +46,10 @@ class Tracker(Node):
         self.base_link_frame = (
             self.get_parameter("base_link_frame").get_parameter_value().string_value
         )
+        self.declare_parameter("tf_timeout_sec", 0.02)
+        self.tf_timeout_sec = (
+            self.get_parameter("tf_timeout_sec").get_parameter_value().double_value
+        )
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -301,7 +305,7 @@ class Tracker(Node):
                 self.map_frame,
                 self.base_link_frame,
                 rclpy.time.Time(),
-                Duration(seconds=1.0),
+                Duration(seconds=self.tf_timeout_sec),
             )
         except:
             return None

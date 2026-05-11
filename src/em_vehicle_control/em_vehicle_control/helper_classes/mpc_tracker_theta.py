@@ -69,6 +69,7 @@ class MPCTracker:
 
         # rviz
         self.plot_rviz = plot_rviz
+        self.debug_goal = False
 
     def compute_path_length(self, path: List[Segment]) -> None:
         """
@@ -465,8 +466,9 @@ class MPCTracker:
         goal_angle = self.final_theta
 
         angle_diff = np.abs((goal_angle - current_pose[2] + np.pi) % (2 * np.pi) - np.pi)
-        s_str = f"{self.s:.2f}" if self.s is not None else "None"
-        print(f"[MPC] dist²={goal_distance_sq:.4f}  angle_diff={angle_diff:.4f}  s={s_str}", flush=True)
+        if self.debug_goal:
+            s_str = f"{self.s:.2f}" if self.s is not None else "None"
+            print(f"[MPC] dist²={goal_distance_sq:.4f}  angle_diff={angle_diff:.4f}  s={s_str}", flush=True)
 
         goal_reached = (
                 (goal_distance_sq < self.goal_radius ** 2) and
