@@ -28,7 +28,10 @@ services:
       rm -rf install/em_vehicle_control install/em_vehicle_control_msgs;
       colcon build --symlink-install --packages-select em_vehicle_control_msgs em_vehicle_control;
       source install/setup.bash;
-      ros2 launch em_vehicle_control tracker_loop.launch.py"
+      ros2 launch em_vehicle_control tracker_loop.launch.py
+      paths_config:=${PATHS_CONFIG:-paths.yaml}
+      workflow_config:=${PATH_WORKFLOW_CONFIG:-path_workflows.yaml}
+      workflow:=${PATH_WORKFLOW:-full_loop}"
 
 volumes:
   em_pathplanning_colcon_build:

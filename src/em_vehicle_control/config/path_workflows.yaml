@@ -1,0 +1,33 @@
+timer_period_s: 80.0
+manual_mode: false
+start_immediately: true
+densify_ds: 0.0
+
+default_workflow: full_loop
+
+workflows:
+  full_loop:
+    steps:
+      - { path_id: 1 }
+      - { path_id: 2 }
+      - { path_id: 3 }
+      - { path_id: 4 }
+
+  bottom_loop:
+    steps:
+      - { path_id: 1 }
+      - { path_id: 4 }
+
+  vertical_loop:
+    steps:
+      - { path_id: 2 }
+      - { path_id: 3 }
+
+  manual_full_loop:
+    manual_mode: true
+    densify_ds: 0.02
+    steps:
+      - { path_id: 1 }
+      - { path_id: 2 }
+      - { path_id: 3 }
+      - { path_id: 4 }

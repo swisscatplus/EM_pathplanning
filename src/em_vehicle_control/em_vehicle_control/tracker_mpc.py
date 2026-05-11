@@ -50,6 +50,7 @@ class Tracker(Node):
         self.tf_timeout_sec = (
             self.get_parameter("tf_timeout_sec").get_parameter_value().double_value
         )
+        self.declare_parameter("paths_config", "paths.yaml")
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -61,7 +62,7 @@ class Tracker(Node):
         self.path = None
         self.path = None
         self.path_msg_lock = threading.RLock()
-        self.path_provider = HardcodedPathProvider()
+        self.path_provider = HardcodedPathProvider(self.get_parameter("paths_config").value)
 
         self._goal_pending = False
         self._active_goal_handle = None

@@ -1,51 +1,56 @@
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
-from em_vehicle_control_msgs.msg import Path2D, Pose2D
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+
+from em_vehicle_control.path_registry import PathWorkflow, YamlPathProvider, msg_value_to_direction
+from em_vehicle_control_msgs.msg import Path2D
+
 
 class LoopingPathPublisher(Node):
     def __init__(self):
-        super().__init__('looping_path_publisher')
+        super().__init__("looping_path_publisher")
+
+        self.declare_parameter("paths_config", "paths.yaml")
+        self.declare_parameter("workflow_config", "path_workflows.yaml")
+        self.declare_parameter("workflow", "")
+        self.declare_parameter("start_immediately", None)
+
+        self.path_provider = YamlPathProvider(self.get_parameter("paths_config").value)
+        self.workflow = PathWorkflow(
+            self.get_parameter("workflow_config").value,
+            self.get_parameter("workflow").value,
+        )
+        start_param = self.get_parameter("start_immediately").value
+        self.start_immediately = self.workflow.start_immediately if start_param is None else bool(start_param)
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,  # works with Fix 1
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
             history=HistoryPolicy.KEEP_LAST,
-            depth=1
+            depth=1,
         )
-        self.publisher = self.create_publisher(Path2D, 'path', qos)
+        self.publisher = self.create_publisher(Path2D, "path", qos)
 
-        self.timer_period = 80.0
-        self.current_path_id = 1
-        self.direction = 1  # 1 = FORWARD, -1 = BACKWARD
+        self.step_index = 0
+        self.get_logger().info(
+            f"Loaded paths from {self.path_provider.config_path}: "
+            + ", ".join(str(path_id) for path_id in self.path_provider.available_path_ids())
+        )
+        self.get_logger().info(
+            f"Using workflow '{self.workflow.name}' from {self.workflow.config_path} "
+            f"with {len(self.workflow.steps)} steps."
+        )
 
-        self.poses_coordinates = {
-            1: [
-                (0.325, 2.985), (0.325, 1.985), (0.325, 0.985), (0.325, 0.0),
-                (0.325, -0.200), (0.65, -0.325), (1.65, -0.325), (2.65, -0.325),
-                (3.65, -0.325), (4.06, -0.325), (4.35, -0.200), (4.35, 0.0), (4.35, 0.885)
-            ],
-            2: [
-                (4.35, 0.885), (4.35, 0.0), (4.35, -0.200), (4.06, -0.325),
-                (3.65, -0.325), (2.65, -0.325), (1.65, -0.325), (0.65, -0.325),
-                (0.325, -0.200), (0.325, 0.0), (0.325, 0.985), (0.325, 1.985), (0.325, 2.985)
-            ],
-        }
-
-        self.get_logger().info("LoopingPathPublisher initialized. Starting loop between path 1 and 2.")
-
-        # Wait for at least one subscriber before first publish
         self._wait_for_subscriber()
 
-        # Publish immediately once a subscriber is present
-        self.timer_callback()
+        if self.start_immediately:
+            self.timer_callback()
 
-        # Then switch to periodic publishing every 80s
-        self.timer = self.create_timer(self.timer_period, self.timer_callback)
+        self.timer = self.create_timer(self.workflow.timer_period_s, self.timer_callback)
 
     def _wait_for_subscriber(self, timeout_sec: float = 10.0):
-        # Spin until a subscriber is present or timeout elapses (optional timeout)
         import time
+
         start = time.time()
         while self.publisher.get_subscription_count() == 0:
             rclpy.spin_once(self, timeout_sec=0.1)
@@ -53,33 +58,28 @@ class LoopingPathPublisher(Node):
                 self.get_logger().warn("No subscribers yet; continuing anyway.")
                 break
         if self.publisher.get_subscription_count() > 0:
-            self.get_logger().info("Subscriber detected on 'path'; publishing first message now.")
+            self.get_logger().info("Subscriber detected on 'path'.")
 
-    def load_path(self, path_id, direction):
-        msg = Path2D()
-        for x, y in self.poses_coordinates[path_id]:
-            pose = Pose2D()
-            pose.x = x
-            pose.y = y
-            pose.direction_flag = Pose2D.FORWARD if direction == 1 else Pose2D.BACKWARD
-            msg.poses.append(pose)
-        return msg
-
-    def timer_callback(self):
-        msg = self.load_path(self.current_path_id, self.direction)
+    def publish_current_and_advance(self):
+        step = self.workflow.steps[self.step_index]
+        path_id = step["path_id"]
+        msg = self.path_provider.build_path(
+            path_id,
+            stamp=self.get_clock().now().to_msg(),
+            direction_override=step["direction"],
+            densify_ds=self.workflow.densify_ds,
+        )
         self.publisher.publish(msg)
         self.get_logger().info(
-            f"Published path {self.current_path_id} "
-            f"({'FORWARD' if self.direction == 1 else 'BACKWARD'})"
+            f"Published workflow '{self.workflow.name}' step {self.step_index + 1}/"
+            f"{len(self.workflow.steps)}: path {path_id} "
+            f"({msg_value_to_direction(msg.poses[0].direction_flag)})"
         )
+        self.step_index = (self.step_index + 1) % len(self.workflow.steps)
 
-        # Alternate path for next cycle
-        if self.current_path_id == 1:
-            self.current_path_id = 2
-            self.direction = -1
-        else:
-            self.current_path_id = 1
-            self.direction = 1
+    def timer_callback(self):
+        self.publish_current_and_advance()
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -88,5 +88,6 @@ def main(args=None):
     node.destroy_node()
     rclpy.shutdown()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
