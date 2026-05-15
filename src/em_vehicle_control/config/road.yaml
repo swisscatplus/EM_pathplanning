@@ -1,3 +1,5 @@
+# Planner-v2 development/test roads.
+# Production station and road geometry is owned by EM_fleetmanager/config.
 # Road segments: list of straight segments (x1,y1) -> (x2,y2)
 roads:
   - { x1: 2.87, y1: 1.67, x2: 3.52, y2: 13.67 }
